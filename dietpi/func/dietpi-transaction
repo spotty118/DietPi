@@ -1,0 +1,517 @@
+#!/bin/bash
+{
+	#////////////////////////////////////
+	# DietPi Transaction & Rollback System
+	#
+	#////////////////////////////////////
+	# Created by DietPi Enhancement Project
+	#
+	#////////////////////////////////////
+	#
+	# Info:
+	# - Location: /boot/dietpi/func/dietpi-transaction
+	# - Provides atomic operations with automatic rollback on failure
+	# - Ensures system consistency and recoverability
+	# - Source this file in scripts: . /boot/dietpi/func/dietpi-transaction
+	#////////////////////////////////////
+
+	# Transaction configuration
+	readonly G_TRANSACTION_DIR="/var/lib/dietpi/transactions"
+	readonly G_TRANSACTION_LOG_DIR="/var/log/dietpi/transactions"
+	G_TRANSACTION_ACTIVE=0
+	G_TRANSACTION_ID=""
+	G_TRANSACTION_OPERATIONS=()
+
+	# Initialize transaction system
+	G_TRANSACTION_INIT() {
+		mkdir -p "$G_TRANSACTION_DIR"
+		mkdir -p "$G_TRANSACTION_LOG_DIR"
+	}
+
+	# Start a new transaction
+	# Usage: G_TRANSACTION_BEGIN "operation_name"
+	G_TRANSACTION_BEGIN() {
+		local operation_name=$1
+		
+		if (( G_TRANSACTION_ACTIVE )); then
+			echo "Error: Transaction already active" >&2
+			return 1
+		fi
+		
+		# Generate unique transaction ID
+		G_TRANSACTION_ID="txn_$(date +%Y%m%d_%H%M%S)_$$"
+		local txn_dir="$G_TRANSACTION_DIR/$G_TRANSACTION_ID"
+		
+		mkdir -p "$txn_dir"/{backup,metadata,operations}
+		
+		# Create transaction metadata
+		cat > "$txn_dir/metadata/info.txt" <<-EOF
+		transaction_id=$G_TRANSACTION_ID
+		operation_name=$operation_name
+		start_time=$(date '+%Y-%m-%d %H:%M:%S')
+		start_timestamp=$(date +%s)
+		pid=$$
+		user=$USER
+		hostname=$(hostname)
+		status=in_progress
+		EOF
+		
+		G_TRANSACTION_ACTIVE=1
+		G_TRANSACTION_OPERATIONS=()
+		
+		# Set up trap for automatic rollback on error
+		trap 'G_TRANSACTION_ROLLBACK_ON_ERROR' ERR EXIT
+		
+		echo "Transaction started: $G_TRANSACTION_ID ($operation_name)"
+		return 0
+	}
+
+	# Record an operation in the transaction
+	# Usage: G_TRANSACTION_RECORD "operation_type" "details"
+	G_TRANSACTION_RECORD() {
+		local op_type=$1
+		local details=$2
+		
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		local op_id=${#G_TRANSACTION_OPERATIONS[@]}
+		local txn_dir="$G_TRANSACTION_DIR/$G_TRANSACTION_ID"
+		
+		# Record operation
+		cat > "$txn_dir/operations/op_${op_id}.txt" <<-EOF
+		operation_id=$op_id
+		operation_type=$op_type
+		details=$details
+		timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+		EOF
+		
+		G_TRANSACTION_OPERATIONS+=("$op_type:$details")
+	}
+
+	# Backup file within transaction
+	# Usage: G_TRANSACTION_BACKUP_FILE "/path/to/file"
+	G_TRANSACTION_BACKUP_FILE() {
+		local file=$1
+		
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		[[ -f "$file" ]] || return 0  # File doesn't exist, nothing to backup
+		
+		local txn_dir="$G_TRANSACTION_DIR/$G_TRANSACTION_ID"
+		local backup_path="$txn_dir/backup$(dirname "$file")"
+		
+		mkdir -p "$backup_path"
+		cp -a "$file" "$backup_path/" || return 1
+		
+		G_TRANSACTION_RECORD "backup_file" "$file"
+		return 0
+	}
+
+	# Backup directory within transaction
+	# Usage: G_TRANSACTION_BACKUP_DIR "/path/to/dir"
+	G_TRANSACTION_BACKUP_DIR() {
+		local dir=$1
+		
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		[[ -d "$dir" ]] || return 0
+		
+		local txn_dir="$G_TRANSACTION_DIR/$G_TRANSACTION_ID"
+		local backup_path="$txn_dir/backup$(dirname "$dir")"
+		
+		mkdir -p "$backup_path"
+		cp -a "$dir" "$backup_path/" || return 1
+		
+		G_TRANSACTION_RECORD "backup_dir" "$dir"
+		return 0
+	}
+
+	# Execute command within transaction
+	# Usage: G_TRANSACTION_EXEC "command" "description"
+	G_TRANSACTION_EXEC() {
+		local command=$1
+		local description=${2:-"$command"}
+		
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		G_TRANSACTION_RECORD "exec" "$description"
+		
+		# Execute command and capture output
+		local output
+		local exit_code
+		
+		output=$(eval "$command" 2>&1)
+		exit_code=$?
+		
+		# Log execution
+		local txn_dir="$G_TRANSACTION_DIR/$G_TRANSACTION_ID"
+		local op_id=$((${#G_TRANSACTION_OPERATIONS[@]} - 1))
+		
+		cat >> "$txn_dir/operations/op_${op_id}.txt" <<-EOF
+		exit_code=$exit_code
+		output<<ENDOUTPUT
+		$output
+		ENDOUTPUT
+		EOF
+		
+		return "$exit_code"
+	}
+
+	# Install package within transaction
+	# Usage: G_TRANSACTION_INSTALL_PACKAGE "package_name"
+	G_TRANSACTION_INSTALL_PACKAGE() {
+		local package=$1
+		
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		# Check if already installed
+		if dpkg-query -s "$package" &> /dev/null; then
+			G_TRANSACTION_RECORD "package_already_installed" "$package"
+			return 0
+		fi
+		
+		G_TRANSACTION_RECORD "package_install" "$package"
+		
+		# Install package
+		if apt-get install -y "$package" &> /dev/null; then
+			return 0
+		else
+			return 1
+		fi
+	}
+
+	# Remove package within transaction
+	# Usage: G_TRANSACTION_REMOVE_PACKAGE "package_name"
+	G_TRANSACTION_REMOVE_PACKAGE() {
+		local package=$1
+		
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		# Check if installed
+		if ! dpkg-query -s "$package" &> /dev/null; then
+			G_TRANSACTION_RECORD "package_not_installed" "$package"
+			return 0
+		fi
+		
+		G_TRANSACTION_RECORD "package_remove" "$package"
+		
+		# Remove package
+		if apt-get remove -y "$package" &> /dev/null; then
+			return 0
+		else
+			return 1
+		fi
+	}
+
+	# Create file within transaction
+	# Usage: G_TRANSACTION_CREATE_FILE "/path/to/file" "content"
+	G_TRANSACTION_CREATE_FILE() {
+		local file=$1
+		local content=$2
+		
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		# Backup if exists
+		[[ -f "$file" ]] && G_TRANSACTION_BACKUP_FILE "$file"
+		
+		G_TRANSACTION_RECORD "create_file" "$file"
+		
+		# Create file
+		echo "$content" > "$file"
+	}
+
+	# Modify file within transaction
+	# Usage: G_TRANSACTION_MODIFY_FILE "/path/to/file" "sed_command"
+	G_TRANSACTION_MODIFY_FILE() {
+		local file=$1
+		local sed_command=$2
+		
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		[[ -f "$file" ]] || return 1
+		
+		# Backup original
+		G_TRANSACTION_BACKUP_FILE "$file"
+		
+		G_TRANSACTION_RECORD "modify_file" "$file"
+		
+		# Apply modification
+		sed -i "$sed_command" "$file"
+	}
+
+	# Delete file within transaction
+	# Usage: G_TRANSACTION_DELETE_FILE "/path/to/file"
+	G_TRANSACTION_DELETE_FILE() {
+		local file=$1
+		
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		[[ -f "$file" ]] || return 0
+		
+		# Backup before deletion
+		G_TRANSACTION_BACKUP_FILE "$file"
+		
+		G_TRANSACTION_RECORD "delete_file" "$file"
+		
+		# Delete file
+		rm -f "$file"
+	}
+
+	# Commit transaction (make changes permanent)
+	# Usage: G_TRANSACTION_COMMIT
+	G_TRANSACTION_COMMIT() {
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		local txn_dir="$G_TRANSACTION_DIR/$G_TRANSACTION_ID"
+		
+		# Update metadata
+		cat >> "$txn_dir/metadata/info.txt" <<-EOF
+		end_time=$(date '+%Y-%m-%d %H:%M:%S')
+		end_timestamp=$(date +%s)
+		status=committed
+		operation_count=${#G_TRANSACTION_OPERATIONS[@]}
+		EOF
+		
+		# Move to log directory
+		mv "$txn_dir" "$G_TRANSACTION_LOG_DIR/"
+		
+		# Clear trap
+		trap - ERR EXIT
+		
+		echo "Transaction committed: $G_TRANSACTION_ID"
+		
+		G_TRANSACTION_ACTIVE=0
+		G_TRANSACTION_ID=""
+		G_TRANSACTION_OPERATIONS=()
+		
+		return 0
+	}
+
+	# Rollback transaction (undo all changes)
+	# Usage: G_TRANSACTION_ROLLBACK
+	G_TRANSACTION_ROLLBACK() {
+		if (( ! G_TRANSACTION_ACTIVE )); then
+			echo "Error: No active transaction" >&2
+			return 1
+		fi
+		
+		echo "Rolling back transaction: $G_TRANSACTION_ID"
+		
+		local txn_dir="$G_TRANSACTION_DIR/$G_TRANSACTION_ID"
+		
+		# Restore backed up files
+		if [[ -d "$txn_dir/backup" ]]; then
+			echo "Restoring backed up files..."
+			cp -af "$txn_dir/backup/"* / 2>/dev/null || true
+		fi
+		
+		# Reverse operations in reverse order
+		local i
+		for ((i=${#G_TRANSACTION_OPERATIONS[@]}-1; i>=0; i--)); do
+			local operation=${G_TRANSACTION_OPERATIONS[$i]}
+			local op_type=${operation%%:*}
+			local details=${operation#*:}
+			
+			case $op_type in
+				package_install)
+					echo "Removing installed package: $details"
+					apt-get remove -y "$details" &> /dev/null || true
+					;;
+				package_remove)
+					echo "Reinstalling removed package: $details"
+					apt-get install -y "$details" &> /dev/null || true
+					;;
+			esac
+		done
+		
+		# Update metadata
+		cat >> "$txn_dir/metadata/info.txt" <<-EOF
+		end_time=$(date '+%Y-%m-%d %H:%M:%S')
+		end_timestamp=$(date +%s)
+		status=rolled_back
+		operation_count=${#G_TRANSACTION_OPERATIONS[@]}
+		EOF
+		
+		# Move to log directory
+		mv "$txn_dir" "$G_TRANSACTION_LOG_DIR/"
+		
+		# Clear trap
+		trap - ERR EXIT
+		
+		echo "Transaction rolled back: $G_TRANSACTION_ID"
+		
+		G_TRANSACTION_ACTIVE=0
+		G_TRANSACTION_ID=""
+		G_TRANSACTION_OPERATIONS=()
+		
+		return 0
+	}
+
+	# Automatic rollback on error (called by trap)
+	G_TRANSACTION_ROLLBACK_ON_ERROR() {
+		local exit_code=$?
+		
+		# Only rollback if transaction is active and exit code indicates error
+		if (( G_TRANSACTION_ACTIVE && exit_code != 0 )); then
+			echo "Error detected (exit code: $exit_code), rolling back transaction..." >&2
+			trap - ERR EXIT  # Prevent recursive trap
+			G_TRANSACTION_ROLLBACK
+		fi
+	}
+
+	# List all transactions
+	# Usage: G_TRANSACTION_LIST
+	G_TRANSACTION_LIST() {
+		echo "Transaction History:"
+		echo "==================="
+		
+		local txn_dir
+		for txn_dir in "$G_TRANSACTION_LOG_DIR"/txn_*; do
+			[[ -d "$txn_dir" ]] || continue
+			
+			if [[ -f "$txn_dir/metadata/info.txt" ]]; then
+				local operation_name status start_time
+				# shellcheck disable=SC1090
+				. "$txn_dir/metadata/info.txt"
+				
+				local txn_id=$(basename "$txn_dir")
+				echo "ID: $txn_id"
+				echo "  Operation: $operation_name"
+				echo "  Status: $status"
+				echo "  Time: $start_time"
+				echo "---"
+			fi
+		done
+	}
+
+	# Get transaction details
+	# Usage: G_TRANSACTION_INFO "transaction_id"
+	G_TRANSACTION_INFO() {
+		local txn_id=$1
+		local txn_dir="$G_TRANSACTION_LOG_DIR/$txn_id"
+		
+		[[ -d "$txn_dir" ]] || return 1
+		
+		echo "Transaction Details: $txn_id"
+		echo "================================"
+		
+		if [[ -f "$txn_dir/metadata/info.txt" ]]; then
+			cat "$txn_dir/metadata/info.txt"
+		fi
+		
+		echo ""
+		echo "Operations:"
+		echo "-----------"
+		
+		local op_file
+		for op_file in "$txn_dir/operations"/op_*.txt; do
+			[[ -f "$op_file" ]] || continue
+			echo ""
+			cat "$op_file"
+		done
+	}
+
+	# Clean old transaction logs (keep last N)
+	# Usage: G_TRANSACTION_CLEANUP 20
+	G_TRANSACTION_CLEANUP() {
+		local keep=${1:-20}
+		
+		cd "$G_TRANSACTION_LOG_DIR" || return 1
+		
+		ls -t | tail -n +$((keep + 1)) | xargs -r rm -rf
+		
+		echo "Cleaned old transaction logs, kept last $keep"
+	}
+
+	# Replay transaction (for debugging)
+	# Usage: G_TRANSACTION_REPLAY "transaction_id"
+	G_TRANSACTION_REPLAY() {
+		local txn_id=$1
+		local txn_dir="$G_TRANSACTION_LOG_DIR/$txn_id"
+		
+		[[ -d "$txn_dir" ]] || return 1
+		
+		echo "Replaying transaction: $txn_id"
+		echo "WARNING: This will re-execute all operations!"
+		echo -n "Continue? [y/N] "
+		read -r response
+		
+		[[ ${response,,} == "y" ]] || return 1
+		
+		# Start new transaction
+		local operation_name
+		# shellcheck disable=SC1090
+		. "$txn_dir/metadata/info.txt"
+		
+		G_TRANSACTION_BEGIN "Replay: $operation_name"
+		
+		# Replay operations
+		local op_file
+		for op_file in "$txn_dir/operations"/op_*.txt; do
+			[[ -f "$op_file" ]] || continue
+			
+			local operation_type details
+			# shellcheck disable=SC1090
+			. "$op_file"
+			
+			echo "Replaying: $operation_type - $details"
+			
+			case $operation_type in
+				exec)
+					G_TRANSACTION_EXEC "$details" "$details"
+					;;
+				package_install)
+					G_TRANSACTION_INSTALL_PACKAGE "$details"
+					;;
+				package_remove)
+					G_TRANSACTION_REMOVE_PACKAGE "$details"
+					;;
+			esac
+		done
+		
+		G_TRANSACTION_COMMIT
+	}
+
+	# Export functions
+	export -f G_TRANSACTION_INIT G_TRANSACTION_BEGIN G_TRANSACTION_RECORD
+	export -f G_TRANSACTION_BACKUP_FILE G_TRANSACTION_BACKUP_DIR
+	export -f G_TRANSACTION_EXEC
+	export -f G_TRANSACTION_INSTALL_PACKAGE G_TRANSACTION_REMOVE_PACKAGE
+	export -f G_TRANSACTION_CREATE_FILE G_TRANSACTION_MODIFY_FILE G_TRANSACTION_DELETE_FILE
+	export -f G_TRANSACTION_COMMIT G_TRANSACTION_ROLLBACK G_TRANSACTION_ROLLBACK_ON_ERROR
+	export -f G_TRANSACTION_LIST G_TRANSACTION_INFO G_TRANSACTION_CLEANUP G_TRANSACTION_REPLAY
+
+	# Initialize on load
+	G_TRANSACTION_INIT
+
+}

@@ -1,0 +1,367 @@
+#!/bin/bash
+{
+	#////////////////////////////////////
+	# DietPi Error Handling & Logging Framework
+	#
+	#////////////////////////////////////
+	# Created by DietPi Enhancement Project
+	#
+	#////////////////////////////////////
+	#
+	# Info:
+	# - Location: /boot/dietpi/func/dietpi-error_handler
+	# - Provides comprehensive error handling and logging
+	# - Automatic error recovery and rollback capabilities
+	# - Source this file in scripts: . /boot/dietpi/func/dietpi-error_handler
+	#////////////////////////////////////
+
+	# Global error handling configuration
+	G_ERROR_LOG_DIR="/var/log/dietpi"
+	G_ERROR_LOG_FILE="$G_ERROR_LOG_DIR/error.log"
+	G_ERROR_BACKUP_DIR="/var/backups/dietpi/error_recovery"
+	G_ERROR_HANDLER_ENABLED=1
+	G_ERROR_RECOVERY_ENABLED=1
+
+	# Error severity levels
+	readonly G_ERROR_LEVEL_DEBUG=0
+	readonly G_ERROR_LEVEL_INFO=1
+	readonly G_ERROR_LEVEL_WARNING=2
+	readonly G_ERROR_LEVEL_ERROR=3
+	readonly G_ERROR_LEVEL_CRITICAL=4
+
+	# Initialize error handling
+	G_ERROR_HANDLER_INIT() {
+		# Create log directory
+		mkdir -p "$G_ERROR_LOG_DIR"
+		mkdir -p "$G_ERROR_BACKUP_DIR"
+		
+		# Set up trap for errors
+		if [[ $G_ERROR_HANDLER_ENABLED == 1 ]]; then
+			set -E  # Inherit ERR trap in functions
+			trap 'G_ERROR_HANDLER_TRAP $? $LINENO "$BASH_COMMAND" "${FUNCNAME[@]}"' ERR
+		fi
+		
+		# Log session start
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Session started: ${G_PROGRAM_NAME:-Unknown Script}"
+	}
+
+	# Main error trap handler
+	G_ERROR_HANDLER_TRAP() {
+		local exit_code=$1
+		local line_number=$2
+		local command=$3
+		shift 3
+		local function_stack=("$@")
+		
+		# Build error context
+		local error_msg="Error in ${G_PROGRAM_NAME:-script}"
+		[[ ${function_stack[0]} != "main" ]] && error_msg+=" -> ${function_stack[0]}()"
+		error_msg+=" at line $line_number"
+		error_msg+="\nCommand: $command"
+		error_msg+="\nExit code: $exit_code"
+		
+		# Log the error
+		G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "$error_msg"
+		
+		# Attempt recovery if enabled
+		if [[ $G_ERROR_RECOVERY_ENABLED == 1 ]]; then
+			G_ERROR_ATTEMPT_RECOVERY "$exit_code" "$command"
+		fi
+		
+		return "$exit_code"
+	}
+
+	# Log error with severity level
+	G_ERROR_LOG() {
+		local level=$1
+		local message=$2
+		local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+		local level_name
+		
+		case $level in
+			$G_ERROR_LEVEL_DEBUG)    level_name="DEBUG" ;;
+			$G_ERROR_LEVEL_INFO)     level_name="INFO" ;;
+			$G_ERROR_LEVEL_WARNING)  level_name="WARNING" ;;
+			$G_ERROR_LEVEL_ERROR)    level_name="ERROR" ;;
+			$G_ERROR_LEVEL_CRITICAL) level_name="CRITICAL" ;;
+			*) level_name="UNKNOWN" ;;
+		esac
+		
+		# Format log entry
+		local log_entry="[$timestamp] [$level_name] [PID:$$] $message"
+		
+		# Write to log file
+		echo -e "$log_entry" >> "$G_ERROR_LOG_FILE"
+		
+		# Also output to console for warnings and above
+		if (( level >= G_ERROR_LEVEL_WARNING )); then
+			if [[ -t 1 ]]; then
+				# Terminal output with colors
+				case $level in
+					$G_ERROR_LEVEL_WARNING)  echo -e "\e[33m$log_entry\e[0m" >&2 ;;
+					$G_ERROR_LEVEL_ERROR)    echo -e "\e[31m$log_entry\e[0m" >&2 ;;
+					$G_ERROR_LEVEL_CRITICAL) echo -e "\e[1;31m$log_entry\e[0m" >&2 ;;
+				esac
+			else
+				# Plain text output
+				echo "$log_entry" >&2
+			fi
+		fi
+		
+		# Rotate log if too large (>10MB)
+		if [[ -f "$G_ERROR_LOG_FILE" ]]; then
+			local log_size=$(stat -f%z "$G_ERROR_LOG_FILE" 2>/dev/null || stat -c%s "$G_ERROR_LOG_FILE" 2>/dev/null || echo 0)
+			if (( log_size > 10485760 )); then
+				mv "$G_ERROR_LOG_FILE" "$G_ERROR_LOG_FILE.old"
+				gzip "$G_ERROR_LOG_FILE.old" &
+			fi
+		fi
+	}
+
+	# Attempt automatic error recovery
+	G_ERROR_ATTEMPT_RECOVERY() {
+		local exit_code=$1
+		local failed_command=$2
+		
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Attempting automatic recovery..."
+		
+		# Common recovery strategies
+		case $exit_code in
+			1)
+				# General error - check if it's a network issue
+				if ! ping -c 1 -W 2 8.8.8.8 &> /dev/null; then
+					G_ERROR_LOG "$G_ERROR_LEVEL_WARNING" "Network connectivity issue detected"
+					return 1
+				fi
+				;;
+			2)
+				# Misuse of shell command
+				G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "Command syntax error detected"
+				return 2
+				;;
+			126)
+				# Command cannot execute
+				G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "Permission denied or command not executable"
+				return 126
+				;;
+			127)
+				# Command not found
+				G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "Command not found: $failed_command"
+				return 127
+				;;
+			130)
+				# Script terminated by Ctrl+C
+				G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Script interrupted by user"
+				return 130
+				;;
+		esac
+		
+		return "$exit_code"
+	}
+
+	# Safe command execution with error handling
+	# Usage: G_ERROR_SAFE_EXEC "command" "error_message" [retry_count]
+	G_ERROR_SAFE_EXEC() {
+		local command=$1
+		local error_msg=${2:-"Command failed"}
+		local retry_count=${3:-0}
+		local attempt=0
+		local exit_code
+		
+		while (( attempt <= retry_count )); do
+			if (( attempt > 0 )); then
+				G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Retry attempt $attempt/$retry_count"
+				sleep $((attempt * 2))
+			fi
+			
+			# Execute command
+			eval "$command"
+			exit_code=$?
+			
+			if (( exit_code == 0 )); then
+				[[ $attempt -gt 0 ]] && G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Command succeeded after $attempt retries"
+				return 0
+			fi
+			
+			((attempt++))
+		done
+		
+		# All attempts failed
+		G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "$error_msg (exit code: $exit_code)"
+		return "$exit_code"
+	}
+
+	# Execute command with timeout and error handling
+	# Usage: G_ERROR_TIMEOUT_EXEC 30 "long_command" "timeout_message"
+	G_ERROR_TIMEOUT_EXEC() {
+		local timeout=$1
+		local command=$2
+		local error_msg=${3:-"Command timed out"}
+		
+		if timeout "$timeout" bash -c "$command"; then
+			return 0
+		else
+			local exit_code=$?
+			if (( exit_code == 124 )); then
+				G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "$error_msg (timeout: ${timeout}s)"
+			else
+				G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "$error_msg (exit code: $exit_code)"
+			fi
+			return "$exit_code"
+		fi
+	}
+
+	# Create checkpoint for rollback
+	# Usage: checkpoint_id=$(G_ERROR_CREATE_CHECKPOINT "operation_name")
+	G_ERROR_CREATE_CHECKPOINT() {
+		local operation=$1
+		local checkpoint_id="checkpoint_$(date +%Y%m%d_%H%M%S)_$$"
+		local checkpoint_dir="$G_ERROR_BACKUP_DIR/$checkpoint_id"
+		
+		mkdir -p "$checkpoint_dir"
+		
+		# Save current state
+		echo "$operation" > "$checkpoint_dir/operation.txt"
+		echo "$(date '+%Y-%m-%d %H:%M:%S')" > "$checkpoint_dir/timestamp.txt"
+		echo "$$" > "$checkpoint_dir/pid.txt"
+		
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Checkpoint created: $checkpoint_id for operation: $operation"
+		echo "$checkpoint_id"
+	}
+
+	# Rollback to checkpoint
+	# Usage: G_ERROR_ROLLBACK "checkpoint_id"
+	G_ERROR_ROLLBACK() {
+		local checkpoint_id=$1
+		local checkpoint_dir="$G_ERROR_BACKUP_DIR/$checkpoint_id"
+		
+		if [[ ! -d "$checkpoint_dir" ]]; then
+			G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "Checkpoint not found: $checkpoint_id"
+			return 1
+		fi
+		
+		local operation=$(cat "$checkpoint_dir/operation.txt" 2>/dev/null || echo "unknown")
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Rolling back operation: $operation"
+		
+		# Restore backed up files
+		if [[ -d "$checkpoint_dir/files" ]]; then
+			cp -a "$checkpoint_dir/files/"* / 2>/dev/null
+		fi
+		
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Rollback completed for: $checkpoint_id"
+		return 0
+	}
+
+	# Backup file to checkpoint
+	# Usage: G_ERROR_BACKUP_TO_CHECKPOINT "checkpoint_id" "/path/to/file"
+	G_ERROR_BACKUP_TO_CHECKPOINT() {
+		local checkpoint_id=$1
+		local file=$2
+		local checkpoint_dir="$G_ERROR_BACKUP_DIR/$checkpoint_id"
+		
+		[[ -d "$checkpoint_dir" ]] || return 1
+		[[ -f "$file" ]] || return 1
+		
+		local backup_path="$checkpoint_dir/files$(dirname "$file")"
+		mkdir -p "$backup_path"
+		cp -a "$file" "$backup_path/"
+		
+		G_ERROR_LOG "$G_ERROR_LEVEL_DEBUG" "Backed up to checkpoint: $file"
+	}
+
+	# Clean old checkpoints (keep last N)
+	# Usage: G_ERROR_CLEANUP_CHECKPOINTS 10
+	G_ERROR_CLEANUP_CHECKPOINTS() {
+		local keep=${1:-10}
+		
+		cd "$G_ERROR_BACKUP_DIR" || return 1
+		ls -t | tail -n +$((keep + 1)) | xargs -r rm -rf
+		
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Cleaned old checkpoints, kept last $keep"
+	}
+
+	# Validate prerequisites before operation
+	# Usage: G_ERROR_VALIDATE_PREREQS "command1" "command2" "file:/path/to/file"
+	G_ERROR_VALIDATE_PREREQS() {
+		local prereq
+		local missing=()
+		
+		for prereq in "$@"; do
+			if [[ $prereq == file:* ]]; then
+				# File prerequisite
+				local file=${prereq#file:}
+				[[ -f "$file" ]] || missing+=("File: $file")
+			elif [[ $prereq == dir:* ]]; then
+				# Directory prerequisite
+				local dir=${prereq#dir:}
+				[[ -d "$dir" ]] || missing+=("Directory: $dir")
+			else
+				# Command prerequisite
+				command -v "$prereq" &> /dev/null || missing+=("Command: $prereq")
+			fi
+		done
+		
+		if (( ${#missing[@]} > 0 )); then
+			G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "Missing prerequisites: ${missing[*]}"
+			return 1
+		fi
+		
+		return 0
+	}
+
+	# Graceful error exit with cleanup
+	# Usage: G_ERROR_EXIT "error message" [exit_code]
+	G_ERROR_EXIT() {
+		local message=$1
+		local exit_code=${2:-1}
+		
+		G_ERROR_LOG "$G_ERROR_LEVEL_CRITICAL" "$message"
+		
+		# Call custom cleanup function if defined
+		if declare -F G_ERROR_CLEANUP &> /dev/null; then
+			G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Running cleanup..."
+			G_ERROR_CLEANUP
+		fi
+		
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Session ended with error (exit code: $exit_code)"
+		exit "$exit_code"
+	}
+
+	# Success exit with logging
+	# Usage: G_ERROR_SUCCESS "success message"
+	G_ERROR_SUCCESS() {
+		local message=${1:-"Operation completed successfully"}
+		
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "$message"
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "Session ended successfully"
+	}
+
+	# Get error statistics
+	# Usage: G_ERROR_GET_STATS
+	G_ERROR_GET_STATS() {
+		if [[ ! -f "$G_ERROR_LOG_FILE" ]]; then
+			echo "No error log found"
+			return 1
+		fi
+		
+		echo "Error Log Statistics:"
+		echo "===================="
+		echo "Total entries: $(wc -l < "$G_ERROR_LOG_FILE")"
+		echo "Errors: $(grep -c '\[ERROR\]' "$G_ERROR_LOG_FILE" 2>/dev/null || echo 0)"
+		echo "Warnings: $(grep -c '\[WARNING\]' "$G_ERROR_LOG_FILE" 2>/dev/null || echo 0)"
+		echo "Critical: $(grep -c '\[CRITICAL\]' "$G_ERROR_LOG_FILE" 2>/dev/null || echo 0)"
+		echo ""
+		echo "Recent errors (last 10):"
+		grep '\[ERROR\]' "$G_ERROR_LOG_FILE" 2>/dev/null | tail -n 10 || echo "None"
+	}
+
+	# Export functions
+	export -f G_ERROR_HANDLER_INIT G_ERROR_HANDLER_TRAP
+	export -f G_ERROR_LOG G_ERROR_ATTEMPT_RECOVERY
+	export -f G_ERROR_SAFE_EXEC G_ERROR_TIMEOUT_EXEC
+	export -f G_ERROR_CREATE_CHECKPOINT G_ERROR_ROLLBACK
+	export -f G_ERROR_BACKUP_TO_CHECKPOINT G_ERROR_CLEANUP_CHECKPOINTS
+	export -f G_ERROR_VALIDATE_PREREQS
+	export -f G_ERROR_EXIT G_ERROR_SUCCESS G_ERROR_GET_STATS
+
+}

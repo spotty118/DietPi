@@ -1,0 +1,427 @@
+#!/bin/bash
+{
+	#////////////////////////////////////
+	# DietPi Enhancement Demo Script
+	#
+	#////////////////////////////////////
+	# Created by DietPi Enhancement Project
+	#
+	#////////////////////////////////////
+	#
+	# Info:
+	# - Location: /boot/dietpi/dietpi-enhancement-demo
+	# - Demonstrates all enhancement features
+	# - Safe to run - uses test operations only
+	# - Usage: sudo /boot/dietpi/dietpi-enhancement-demo
+	#////////////////////////////////////
+
+	# Load all enhancement libraries
+	. /boot/dietpi/func/dietpi-helpers
+	. /boot/dietpi/func/dietpi-error_handler
+	. /boot/dietpi/func/dietpi-config_manager
+	. /boot/dietpi/func/dietpi-ui_enhanced
+	. /boot/dietpi/func/dietpi-transaction
+	. /boot/dietpi/func/dietpi-performance_monitor
+
+	# Script configuration
+	readonly G_PROGRAM_NAME='DietPi Enhancement Demo'
+
+	# Initialize error handling
+	G_ERROR_HANDLER_INIT
+
+	# Main menu
+	Show_Main_Menu() {
+		while true; do
+			clear
+			G_UI_BOX "DietPi Enhancement Demo" \
+				"This script demonstrates all enhancement features" \
+				"All operations are safe and reversible"
+			
+			echo ""
+			G_UI_LIST_NUMBERED \
+				"System Information & Validation" \
+				"Configuration Management Demo" \
+				"Transaction & Rollback Demo" \
+				"Performance Monitoring Demo" \
+				"UI Components Demo" \
+				"Error Handling Demo" \
+				"Apply System Optimizations" \
+				"Exit"
+			
+			echo ""
+			echo -n "Select option [1-8]: "
+			read -r choice
+			
+			case $choice in
+				1) Demo_System_Info ;;
+				2) Demo_Config_Management ;;
+				3) Demo_Transaction ;;
+				4) Demo_Performance ;;
+				5) Demo_UI_Components ;;
+				6) Demo_Error_Handling ;;
+				7) Apply_Optimizations ;;
+				8) G_UI_SUCCESS "Goodbye!"; exit 0 ;;
+				*) G_UI_ERROR "Invalid choice" ;;
+			esac
+			
+			echo ""
+			echo -n "Press Enter to continue..."
+			read -r
+		done
+	}
+
+	# Demo 1: System Information & Validation
+	Demo_System_Info() {
+		G_UI_SECTION "System Information & Validation"
+		
+		G_UI_INFO "Gathering system information..."
+		echo ""
+		
+		# System info using helpers
+		G_UI_TABLE_HEADER "Metric" "Value"
+		G_UI_TABLE_ROW "RAM" "$(G_GET_RAM_MB) MB"
+		G_UI_TABLE_ROW "CPU Cores" "$(G_GET_CPU_COUNT)"
+		G_UI_TABLE_ROW "CPU Temp" "$(G_GET_CPU_TEMP)°C"
+		G_UI_TABLE_ROW "Disk Space" "$(G_GET_DISK_SPACE /) GB free"
+		G_UI_TABLE_ROW "Uptime" "$(G_GET_UPTIME) seconds"
+		G_UI_TABLE_ROW "Load Average" "$(G_GET_LOAD_AVG)"
+		G_UI_TABLE_ROW "Primary Interface" "$(G_GET_PRIMARY_INTERFACE)"
+		G_UI_TABLE_ROW "IP Address" "$(G_GET_IP_ADDRESS)"
+		
+		echo ""
+		G_UI_INFO "Running validation checks..."
+		echo ""
+		
+		# Validation checks
+		G_CHECK_ROOT && G_UI_SUCCESS "Running as root" || G_UI_ERROR "Not running as root"
+		G_CHECK_COMMAND "bash" && G_UI_SUCCESS "bash available" || G_UI_ERROR "bash not found"
+		G_CHECK_DIR "/boot/dietpi" && G_UI_SUCCESS "/boot/dietpi exists" || G_UI_ERROR "/boot/dietpi not found"
+		G_CHECK_INTERNET && G_UI_SUCCESS "Internet connected" || G_UI_WARNING "No internet connection"
+		
+		echo ""
+		G_UI_INFO "Checking system resources..."
+		if G_CHECK_RESOURCES 512 5; then
+			G_UI_SUCCESS "Sufficient resources available"
+		else
+			G_UI_WARNING "Low resources detected"
+		fi
+		
+		echo ""
+		G_UI_SYSTEM_STATUS
+	}
+
+	# Demo 2: Configuration Management
+	Demo_Config_Management() {
+		G_UI_SECTION "Configuration Management Demo"
+		
+		local test_config="/tmp/dietpi_test_config.conf"
+		
+		G_UI_INFO "Creating test configuration file..."
+		cat > "$test_config" <<-EOF
+		# Test Configuration
+		setting1=value1
+		setting2=value2
+		setting3=value3
+		EOF
+		G_UI_SUCCESS "Test config created: $test_config"
+		
+		echo ""
+		G_UI_INFO "Backing up configuration..."
+		local backup=$(G_CONFIG_BACKUP "$test_config" "Demo backup")
+		G_UI_SUCCESS "Backup created: $backup"
+		
+		echo ""
+		G_UI_INFO "Modifying configuration..."
+		G_CONFIG_MERGE "$test_config" "setting4=value4"
+		G_UI_SUCCESS "Added setting4=value4"
+		
+		echo ""
+		G_UI_INFO "Checking if configuration changed..."
+		if G_CONFIG_HAS_CHANGED "$test_config"; then
+			G_UI_SUCCESS "Configuration has changed"
+		else
+			G_UI_INFO "No changes detected"
+		fi
+		
+		echo ""
+		G_UI_INFO "Showing configuration diff..."
+		G_CONFIG_DIFF "$test_config"
+		
+		echo ""
+		G_UI_INFO "Listing available backups..."
+		G_CONFIG_LIST_BACKUPS "$test_config"
+		
+		echo ""
+		if G_UI_CONFIRM "Restore from backup?"; then
+			G_CONFIG_RESTORE "$test_config"
+			G_UI_SUCCESS "Configuration restored"
+		fi
+		
+		echo ""
+		G_UI_INFO "Cleaning up test files..."
+		rm -f "$test_config"
+		G_UI_SUCCESS "Cleanup complete"
+	}
+
+	# Demo 3: Transaction & Rollback
+	Demo_Transaction() {
+		G_UI_SECTION "Transaction & Rollback Demo"
+		
+		G_UI_INFO "Starting transaction..."
+		G_TRANSACTION_BEGIN "Demo Transaction"
+		
+		echo ""
+		G_UI_TASK_INIT "Transaction Demo" 5
+		
+		G_UI_TASK_UPDATE "Creating test file"
+		G_TRANSACTION_CREATE_FILE "/tmp/dietpi_txn_test.txt" "Test content"
+		sleep 1
+		
+		G_UI_TASK_UPDATE "Recording operation"
+		G_TRANSACTION_RECORD "demo_operation" "This is a demo"
+		sleep 1
+		
+		G_UI_TASK_UPDATE "Executing command"
+		G_TRANSACTION_EXEC "echo 'Transaction test'" "Echo test"
+		sleep 1
+		
+		G_UI_TASK_UPDATE "Backing up file"
+		G_TRANSACTION_BACKUP_FILE "/tmp/dietpi_txn_test.txt"
+		sleep 1
+		
+		G_UI_TASK_UPDATE "Finalizing"
+		sleep 1
+		
+		G_UI_TASK_COMPLETE
+		
+		echo ""
+		if G_UI_CONFIRM "Commit transaction?"; then
+			G_TRANSACTION_COMMIT
+			G_UI_SUCCESS "Transaction committed"
+		else
+			G_TRANSACTION_ROLLBACK
+			G_UI_WARNING "Transaction rolled back"
+		fi
+		
+		echo ""
+		G_UI_INFO "Transaction history:"
+		G_TRANSACTION_LIST | head -n 20
+		
+		# Cleanup
+		rm -f /tmp/dietpi_txn_test.txt
+	}
+
+	# Demo 4: Performance Monitoring
+	Demo_Performance() {
+		G_UI_SECTION "Performance Monitoring Demo"
+		
+		G_UI_INFO "Collecting performance metrics..."
+		echo ""
+		
+		# CPU metrics
+		echo "CPU Metrics:"
+		echo "  Usage: $(G_PERF_GET_CPU_USAGE)%"
+		echo "  Frequency: $(G_PERF_GET_CPU_FREQ) MHz"
+		echo "  Temperature: $(G_PERF_GET_CPU_TEMP)°C"
+		echo "  Load: $(G_PERF_GET_LOAD_AVG)"
+		echo ""
+		
+		# Memory metrics
+		echo "Memory Metrics:"
+		G_PERF_GET_MEMORY_USAGE
+		echo ""
+		
+		# Disk metrics
+		echo "Disk Metrics:"
+		G_PERF_GET_DISK_USAGE /
+		echo ""
+		
+		# Network metrics
+		echo "Network Metrics:"
+		G_PERF_GET_NETWORK_STATS
+		echo ""
+		
+		# Top processes
+		G_PERF_GET_TOP_CPU 5
+		echo ""
+		
+		G_UI_INFO "Creating performance snapshot..."
+		local snapshot=$(G_PERF_COLLECT_SNAPSHOT)
+		G_UI_SUCCESS "Snapshot saved: $snapshot"
+		
+		echo ""
+		if G_UI_CONFIRM "View real-time dashboard? (Ctrl+C to exit)"; then
+			G_PERF_DASHBOARD
+		fi
+	}
+
+	# Demo 5: UI Components
+	Demo_UI_Components() {
+		G_UI_SECTION "UI Components Demo"
+		
+		# Status messages
+		G_UI_INFO "Demonstrating status messages..."
+		sleep 1
+		G_UI_SUCCESS "This is a success message"
+		sleep 1
+		G_UI_WARNING "This is a warning message"
+		sleep 1
+		G_UI_ERROR "This is an error message"
+		sleep 1
+		G_UI_INFO "This is an info message"
+		
+		echo ""
+		G_UI_INFO "Demonstrating progress bar..."
+		for i in {1..50}; do
+			G_UI_PROGRESS_BAR $i 50 "Processing"
+			sleep 0.05
+		done
+		
+		echo ""
+		G_UI_INFO "Demonstrating spinner..."
+		sleep 3 &
+		G_UI_SPINNER $! "Working"
+		
+		echo ""
+		G_UI_INFO "Demonstrating step indicators..."
+		G_UI_STEP 1 5 "Initializing"
+		sleep 1
+		G_UI_STEP 2 5 "Processing"
+		sleep 1
+		G_UI_STEP 3 5 "Validating"
+		sleep 1
+		G_UI_STEP 4 5 "Finalizing"
+		sleep 1
+		G_UI_STEP 5 5 "Complete"
+		
+		echo ""
+		G_UI_INFO "Demonstrating lists..."
+		G_UI_LIST "First item" "Second item" "Third item"
+		
+		echo ""
+		G_UI_LIST_NUMBERED "Option A" "Option B" "Option C"
+		
+		echo ""
+		G_UI_INFO "Demonstrating table..."
+		G_UI_TABLE_HEADER "Name" "Value" "Status"
+		G_UI_TABLE_ROW "Item 1" "100" "OK"
+		G_UI_TABLE_ROW "Item 2" "200" "OK"
+		G_UI_TABLE_ROW "Item 3" "300" "OK"
+		
+		echo ""
+		G_UI_BOX "Information Box" \
+			"This is a boxed message" \
+			"It can contain multiple lines" \
+			"And looks nice!"
+	}
+
+	# Demo 6: Error Handling
+	Demo_Error_Handling() {
+		G_UI_SECTION "Error Handling Demo"
+		
+		G_UI_INFO "Demonstrating error logging..."
+		G_ERROR_LOG "$G_ERROR_LEVEL_INFO" "This is an info message"
+		G_ERROR_LOG "$G_ERROR_LEVEL_WARNING" "This is a warning"
+		G_ERROR_LOG "$G_ERROR_LEVEL_ERROR" "This is an error"
+		
+		echo ""
+		G_UI_INFO "Demonstrating safe execution..."
+		if G_ERROR_SAFE_EXEC "echo 'Test command'" "Command execution" 0; then
+			G_UI_SUCCESS "Command executed successfully"
+		else
+			G_UI_ERROR "Command failed"
+		fi
+		
+		echo ""
+		G_UI_INFO "Demonstrating checkpoint system..."
+		local checkpoint=$(G_ERROR_CREATE_CHECKPOINT "Demo checkpoint")
+		G_UI_SUCCESS "Checkpoint created: $checkpoint"
+		
+		echo ""
+		G_UI_INFO "Demonstrating prerequisite validation..."
+		if G_ERROR_VALIDATE_PREREQS "bash" "cat" "ls"; then
+			G_UI_SUCCESS "All prerequisites available"
+		else
+			G_UI_ERROR "Missing prerequisites"
+		fi
+		
+		echo ""
+		G_UI_INFO "Error statistics:"
+		G_ERROR_GET_STATS
+	}
+
+	# Apply System Optimizations
+	Apply_Optimizations() {
+		G_UI_SECTION "Apply System Optimizations"
+		
+		G_UI_WARNING "This will apply kernel optimizations to your system"
+		echo ""
+		
+		if ! G_UI_CONFIRM "Continue with applying optimizations?"; then
+			G_UI_INFO "Operation cancelled"
+			return
+		fi
+		
+		echo ""
+		G_UI_INFO "Creating backup of current sysctl settings..."
+		G_CONFIG_BACKUP "/etc/sysctl.d/97-dietpi.conf" "Pre-optimization backup"
+		
+		echo ""
+		G_UI_INFO "Applying sysctl optimizations..."
+		if sysctl -p /etc/sysctl.d/97-dietpi.conf &> /dev/null; then
+			G_UI_SUCCESS "Optimizations applied successfully"
+			
+			echo ""
+			G_UI_INFO "Verifying key settings..."
+			echo "  Swappiness: $(sysctl -n vm.swappiness)"
+			echo "  TCP Congestion Control: $(sysctl -n net.ipv4.tcp_congestion_control)"
+			echo "  TCP Fast Open: $(sysctl -n net.ipv4.tcp_fastopen)"
+			echo "  Inotify Max Watches: $(sysctl -n fs.inotify.max_user_watches)"
+			
+			echo ""
+			G_UI_SUCCESS "System optimizations are now active!"
+			G_UI_INFO "Changes will persist across reboots"
+		else
+			G_UI_ERROR "Failed to apply optimizations"
+			G_UI_INFO "Restoring backup..."
+			G_CONFIG_RESTORE "/etc/sysctl.d/97-dietpi.conf"
+		fi
+	}
+
+	# Main execution
+	Main() {
+		# Check if running as root
+		if ! G_CHECK_ROOT; then
+			G_UI_ERROR "This script must be run as root"
+			G_UI_INFO "Please run: sudo $0"
+			exit 1
+		fi
+		
+		# Welcome message
+		clear
+		G_UI_BOX "Welcome to DietPi Enhancement Demo" \
+			"" \
+			"This script demonstrates all enhancement features:" \
+			"  • System validation and information" \
+			"  • Configuration management" \
+			"  • Transaction & rollback system" \
+			"  • Performance monitoring" \
+			"  • Enhanced UI components" \
+			"  • Error handling framework" \
+			"  • System optimizations" \
+			"" \
+			"All operations are safe and reversible"
+		
+		echo ""
+		if G_UI_CONFIRM "Continue?"; then
+			Show_Main_Menu
+		else
+			G_UI_INFO "Demo cancelled"
+			exit 0
+		fi
+	}
+
+	# Run main function
+	Main
+
+}

@@ -1,0 +1,168 @@
+#!/bin/bash
+{
+	#////////////////////////////////////
+	# DietPi Enhancement Setup Script
+	#
+	#////////////////////////////////////
+	# Created by DietPi Enhancement Project
+	#
+	#////////////////////////////////////
+	#
+	# Info:
+	# - Quick setup script for DietPi enhancements
+	# - Validates installation
+	# - Applies optimizations (optional)
+	# - Creates initial snapshot
+	# - Usage: sudo ./dietpi-enhancement-setup
+	#////////////////////////////////////
+
+	# Colors for output
+	RED='\e[31m'
+	GREEN='\e[32m'
+	YELLOW='\e[33m'
+	BLUE='\e[36m'
+	RESET='\e[0m'
+
+	# Check if running as root
+	if [[ $EUID -ne 0 ]]; then
+		echo -e "${RED}Error: This script must be run as root${RESET}"
+		echo "Please run: sudo $0"
+		exit 1
+	fi
+
+	echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${RESET}"
+	echo -e "${BLUE}║         DietPi Enhancement Package - Setup Script             ║${RESET}"
+	echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${RESET}"
+	echo ""
+
+	# Step 1: Validate installation
+	echo -e "${BLUE}[1/5]${RESET} Validating installation..."
+
+	MISSING_FILES=()
+	REQUIRED_FILES=(
+		"/boot/dietpi/func/dietpi-helpers"
+		"/boot/dietpi/func/dietpi-error_handler"
+		"/boot/dietpi/func/dietpi-config_manager"
+		"/boot/dietpi/func/dietpi-ui_enhanced"
+		"/boot/dietpi/func/dietpi-transaction"
+		"/boot/dietpi/func/dietpi-performance_monitor"
+		"/boot/dietpi/dietpi-enhancement-demo"
+		"/etc/sysctl.d/97-dietpi.conf"
+	)
+
+	for file in "${REQUIRED_FILES[@]}"; do
+		if [[ ! -f "$file" ]]; then
+			MISSING_FILES+=("$file")
+		fi
+	done
+
+	if [[ ${#MISSING_FILES[@]} -gt 0 ]]; then
+		echo -e "${RED}✗ Missing files:${RESET}"
+		for file in "${MISSING_FILES[@]}"; do
+			echo "  - $file"
+		done
+		echo ""
+		echo -e "${YELLOW}Please ensure all enhancement files are in place.${RESET}"
+		exit 1
+	fi
+
+	echo -e "${GREEN}✓ All enhancement files found${RESET}"
+	echo ""
+
+	# Step 2: Make scripts executable
+	echo -e "${BLUE}[2/5]${RESET} Setting permissions..."
+
+	chmod +x /boot/dietpi/func/dietpi-* 2>/dev/null
+	chmod +x /boot/dietpi/dietpi-enhancement-demo 2>/dev/null
+
+	echo -e "${GREEN}✓ Permissions set${RESET}"
+	echo ""
+
+	# Step 3: Create directories
+	echo -e "${BLUE}[3/5]${RESET} Creating directories..."
+
+	mkdir -p /var/lib/dietpi/{metrics,transactions}
+	mkdir -p /var/log/dietpi/{performance,transactions}
+	mkdir -p /var/backups/dietpi/{configs,error_recovery}
+
+	echo -e "${GREEN}✓ Directories created${RESET}"
+	echo ""
+
+	# Step 4: Apply optimizations (optional)
+	echo -e "${BLUE}[4/5]${RESET} System optimizations..."
+	echo ""
+	echo "Would you like to apply kernel optimizations now?"
+	echo "This will improve network performance, memory usage, and security."
+	echo ""
+	echo -n "Apply optimizations? [y/N]: "
+	read -r response
+
+	if [[ ${response,,} == "y" ]]; then
+		echo ""
+		echo "Backing up current sysctl settings..."
+		cp /etc/sysctl.d/97-dietpi.conf /etc/sysctl.d/97-dietpi.conf.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+		
+		echo "Applying optimizations..."
+		if sysctl -p /etc/sysctl.d/97-dietpi.conf &> /dev/null; then
+			echo -e "${GREEN}✓ Optimizations applied successfully${RESET}"
+			echo ""
+			echo "Key settings:"
+			echo "  Swappiness: $(sysctl -n vm.swappiness)"
+			echo "  TCP Congestion Control: $(sysctl -n net.ipv4.tcp_congestion_control)"
+			echo "  TCP Fast Open: $(sysctl -n net.ipv4.tcp_fastopen)"
+			echo "  Inotify Max Watches: $(sysctl -n fs.inotify.max_user_watches)"
+		else
+			echo -e "${YELLOW}⚠ Failed to apply some optimizations${RESET}"
+			echo "You can try manually: sudo sysctl -p /etc/sysctl.d/97-dietpi.conf"
+		fi
+	else
+		echo -e "${YELLOW}⊘ Skipped (you can apply later with: sudo sysctl -p /etc/sysctl.d/97-dietpi.conf)${RESET}"
+	fi
+	echo ""
+
+	# Step 5: Create initial snapshot
+	echo -e "${BLUE}[5/5]${RESET} Creating initial snapshot..."
+
+	. /boot/dietpi/func/dietpi-config_manager
+	G_CONFIG_SNAPSHOT "initial_setup_$(date +%Y%m%d)" &> /dev/null
+
+	echo -e "${GREEN}✓ Initial snapshot created${RESET}"
+	echo ""
+
+	# Summary
+	echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${RESET}"
+	echo -e "${GREEN}║                    Setup Complete! ✓                           ║${RESET}"
+	echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${RESET}"
+	echo ""
+	echo "DietPi Enhancement Package is now ready to use!"
+	echo ""
+	echo -e "${BLUE}Next Steps:${RESET}"
+	echo ""
+	echo "1. Try the interactive demo:"
+	echo "   ${YELLOW}sudo /boot/dietpi/dietpi-enhancement-demo${RESET}"
+	echo ""
+	echo "2. Read the documentation:"
+	echo "   ${YELLOW}cat /boot/dietpi/ENHANCEMENTS_README.md${RESET}"
+	echo ""
+	echo "3. Use in your scripts:"
+	echo "   ${YELLOW}. /boot/dietpi/func/dietpi-helpers${RESET}"
+	echo "   ${YELLOW}. /boot/dietpi/func/dietpi-ui_enhanced${RESET}"
+	echo ""
+	echo "4. Monitor performance:"
+	echo "   ${YELLOW}. /boot/dietpi/func/dietpi-performance_monitor${RESET}"
+	echo "   ${YELLOW}G_PERF_DASHBOARD${RESET}"
+	echo ""
+	echo -e "${BLUE}Documentation:${RESET}"
+	echo "  • Quick Start: ENHANCEMENTS_README.md"
+	echo "  • Full API: ENHANCEMENTS.md"
+	echo "  • Summary: ENHANCEMENT_SUMMARY.md"
+	echo ""
+	echo -e "${BLUE}Support:${RESET}"
+	echo "  • Logs: /var/log/dietpi/"
+	echo "  • Backups: /var/backups/dietpi/"
+	echo "  • Snapshots: /var/backups/dietpi/configs/snapshots/"
+	echo ""
+	echo -e "${GREEN}Enjoy your enhanced DietPi! 🚀${RESET}"
+	echo ""
+
+}

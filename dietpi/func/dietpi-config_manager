@@ -1,0 +1,479 @@
+#!/bin/bash
+{
+	#////////////////////////////////////
+	# DietPi Configuration Manager
+	#
+	#////////////////////////////////////
+	# Created by DietPi Enhancement Project
+	#
+	#////////////////////////////////////
+	#
+	# Info:
+	# - Location: /boot/dietpi/func/dietpi-config_manager
+	# - Provides safe configuration management with validation and backup
+	# - Automatic rollback on configuration errors
+	# - Source this file in scripts: . /boot/dietpi/func/dietpi-config_manager
+	#////////////////////////////////////
+
+	# Configuration paths
+	readonly G_CONFIG_BACKUP_DIR="/var/backups/dietpi/configs"
+	readonly G_CONFIG_VALIDATION_DIR="/boot/dietpi/conf/validation"
+	readonly G_CONFIG_SCHEMA_DIR="/boot/dietpi/conf/schemas"
+
+	# Initialize configuration manager
+	G_CONFIG_INIT() {
+		mkdir -p "$G_CONFIG_BACKUP_DIR"
+		mkdir -p "$G_CONFIG_VALIDATION_DIR"
+		mkdir -p "$G_CONFIG_SCHEMA_DIR"
+	}
+
+	# Backup configuration file with metadata
+	# Usage: G_CONFIG_BACKUP "/etc/config.conf" "reason for backup"
+	G_CONFIG_BACKUP() {
+		local config_file=$1
+		local reason=${2:-"Manual backup"}
+		
+		[[ -f "$config_file" ]] || return 1
+		
+		local timestamp=$(date +%Y%m%d_%H%M%S)
+		local config_name=$(basename "$config_file")
+		local backup_dir="$G_CONFIG_BACKUP_DIR/$config_name"
+		local backup_file="$backup_dir/${config_name}.${timestamp}"
+		
+		mkdir -p "$backup_dir"
+		
+		# Copy file with metadata
+		cp -a "$config_file" "$backup_file"
+		
+		# Create metadata file
+		cat > "${backup_file}.meta" <<-EOF
+		timestamp=$timestamp
+		original_path=$config_file
+		reason=$reason
+		user=$USER
+		hostname=$(hostname)
+		checksum=$(md5sum "$config_file" | awk '{print $1}')
+		EOF
+		
+		echo "$backup_file"
+	}
+
+	# Restore configuration from backup
+	# Usage: G_CONFIG_RESTORE "/etc/config.conf" [backup_timestamp]
+	G_CONFIG_RESTORE() {
+		local config_file=$1
+		local timestamp=$2
+		local config_name=$(basename "$config_file")
+		local backup_dir="$G_CONFIG_BACKUP_DIR/$config_name"
+		
+		[[ -d "$backup_dir" ]] || return 1
+		
+		local backup_file
+		if [[ -n "$timestamp" ]]; then
+			# Restore specific backup
+			backup_file="$backup_dir/${config_name}.${timestamp}"
+		else
+			# Restore most recent backup
+			backup_file=$(ls -t "$backup_dir"/*.conf "$backup_dir"/*.txt 2>/dev/null | grep -v '\.meta$' | head -n1)
+		fi
+		
+		[[ -f "$backup_file" ]] || return 1
+		
+		# Backup current file before restore
+		G_CONFIG_BACKUP "$config_file" "Pre-restore backup"
+		
+		# Restore
+		cp -a "$backup_file" "$config_file"
+		
+		return 0
+	}
+
+	# List available backups for a configuration file
+	# Usage: G_CONFIG_LIST_BACKUPS "/etc/config.conf"
+	G_CONFIG_LIST_BACKUPS() {
+		local config_file=$1
+		local config_name=$(basename "$config_file")
+		local backup_dir="$G_CONFIG_BACKUP_DIR/$config_name"
+		
+		[[ -d "$backup_dir" ]] || return 1
+		
+		echo "Available backups for $config_name:"
+		echo "===================================="
+		
+		local backup_file
+		for backup_file in "$backup_dir"/*.meta; do
+			[[ -f "$backup_file" ]] || continue
+			
+			local timestamp reason
+			# shellcheck disable=SC1090
+			. "$backup_file"
+			
+			echo "Timestamp: $timestamp"
+			echo "Reason: $reason"
+			echo "---"
+		done
+	}
+
+	# Validate configuration file syntax
+	# Usage: G_CONFIG_VALIDATE "/etc/nginx/nginx.conf" "nginx -t"
+	G_CONFIG_VALIDATE() {
+		local config_file=$1
+		local validation_command=$2
+		
+		[[ -f "$config_file" ]] || return 1
+		
+		# Run validation command if provided
+		if [[ -n "$validation_command" ]]; then
+			if eval "$validation_command" &> /dev/null; then
+				return 0
+			else
+				return 1
+			fi
+		fi
+		
+		# Basic syntax checks based on file type
+		case "$config_file" in
+			*.conf|*.config)
+				# Check for basic syntax errors
+				grep -q $'[\x00-\x08\x0B-\x0C\x0E-\x1F]' "$config_file" && return 1
+				;;
+			*.json)
+				command -v jq &> /dev/null && jq empty "$config_file" &> /dev/null || return 1
+				;;
+			*.yaml|*.yml)
+				command -v yamllint &> /dev/null && yamllint "$config_file" &> /dev/null || return 1
+				;;
+			*.xml)
+				command -v xmllint &> /dev/null && xmllint --noout "$config_file" &> /dev/null || return 1
+				;;
+		esac
+		
+		return 0
+	}
+
+	# Safe configuration update with validation and rollback
+	# Usage: G_CONFIG_SAFE_UPDATE "/etc/config.conf" "new content" [validation_command]
+	G_CONFIG_SAFE_UPDATE() {
+		local config_file=$1
+		local new_content=$2
+		local validation_command=$3
+		
+		# Backup current configuration
+		local backup_file=$(G_CONFIG_BACKUP "$config_file" "Pre-update backup")
+		[[ -n "$backup_file" ]] || return 1
+		
+		# Write new content to temporary file
+		local temp_file=$(mktemp)
+		echo "$new_content" > "$temp_file"
+		
+		# Validate new configuration
+		if [[ -n "$validation_command" ]]; then
+			# Replace config file path in validation command
+			local test_command=${validation_command//$config_file/$temp_file}
+			
+			if ! eval "$test_command" &> /dev/null; then
+				rm -f "$temp_file"
+				return 1
+			fi
+		fi
+		
+		# Apply new configuration
+		cp "$temp_file" "$config_file"
+		rm -f "$temp_file"
+		
+		# Validate after applying
+		if ! G_CONFIG_VALIDATE "$config_file" "$validation_command"; then
+			# Rollback on validation failure
+			cp "$backup_file" "$config_file"
+			return 1
+		fi
+		
+		return 0
+	}
+
+	# Merge configuration changes safely
+	# Usage: G_CONFIG_MERGE "/etc/config.conf" "key=value"
+	G_CONFIG_MERGE() {
+		local config_file=$1
+		local new_setting=$2
+		
+		[[ -f "$config_file" ]] || return 1
+		
+		# Backup first
+		G_CONFIG_BACKUP "$config_file" "Pre-merge backup" > /dev/null
+		
+		# Extract key and value
+		local key=${new_setting%%=*}
+		local value=${new_setting#*=}
+		
+		# Check if key exists
+		if grep -q "^${key}=" "$config_file"; then
+			# Update existing key
+			sed -i "s|^${key}=.*|${key}=${value}|" "$config_file"
+		else
+			# Add new key
+			echo "${key}=${value}" >> "$config_file"
+		fi
+		
+		return 0
+	}
+
+	# Remove configuration entry safely
+	# Usage: G_CONFIG_REMOVE "/etc/config.conf" "key_pattern"
+	G_CONFIG_REMOVE() {
+		local config_file=$1
+		local key_pattern=$2
+		
+		[[ -f "$config_file" ]] || return 1
+		
+		# Backup first
+		G_CONFIG_BACKUP "$config_file" "Pre-removal backup" > /dev/null
+		
+		# Remove matching lines
+		sed -i "/^${key_pattern}/d" "$config_file"
+		
+		return 0
+	}
+
+	# Get configuration value
+	# Usage: value=$(G_CONFIG_GET "/etc/config.conf" "key")
+	G_CONFIG_GET() {
+		local config_file=$1
+		local key=$2
+		
+		[[ -f "$config_file" ]] || return 1
+		
+		grep "^${key}=" "$config_file" | cut -d= -f2- | head -n1
+	}
+
+	# Check if configuration has changed
+	# Usage: G_CONFIG_HAS_CHANGED "/etc/config.conf" && echo "Changed"
+	G_CONFIG_HAS_CHANGED() {
+		local config_file=$1
+		local config_name=$(basename "$config_file")
+		local backup_dir="$G_CONFIG_BACKUP_DIR/$config_name"
+		
+		[[ -f "$config_file" ]] || return 1
+		[[ -d "$backup_dir" ]] || return 0  # No backup = changed
+		
+		local latest_backup=$(ls -t "$backup_dir"/*.conf "$backup_dir"/*.txt 2>/dev/null | grep -v '\.meta$' | head -n1)
+		[[ -f "$latest_backup" ]] || return 0
+		
+		# Compare checksums
+		local current_sum=$(md5sum "$config_file" | awk '{print $1}')
+		local backup_sum=$(md5sum "$latest_backup" | awk '{print $1}')
+		
+		[[ "$current_sum" != "$backup_sum" ]]
+	}
+
+	# Create configuration diff
+	# Usage: G_CONFIG_DIFF "/etc/config.conf" [backup_timestamp]
+	G_CONFIG_DIFF() {
+		local config_file=$1
+		local timestamp=$2
+		local config_name=$(basename "$config_file")
+		local backup_dir="$G_CONFIG_BACKUP_DIR/$config_name"
+		
+		[[ -f "$config_file" ]] || return 1
+		[[ -d "$backup_dir" ]] || return 1
+		
+		local backup_file
+		if [[ -n "$timestamp" ]]; then
+			backup_file="$backup_dir/${config_name}.${timestamp}"
+		else
+			backup_file=$(ls -t "$backup_dir"/*.conf "$backup_dir"/*.txt 2>/dev/null | grep -v '\.meta$' | head -n1)
+		fi
+		
+		[[ -f "$backup_file" ]] || return 1
+		
+		diff -u "$backup_file" "$config_file" || true
+	}
+
+	# Clean old configuration backups (keep last N)
+	# Usage: G_CONFIG_CLEANUP "/etc/config.conf" 10
+	G_CONFIG_CLEANUP() {
+		local config_file=$1
+		local keep=${2:-10}
+		local config_name=$(basename "$config_file")
+		local backup_dir="$G_CONFIG_BACKUP_DIR/$config_name"
+		
+		[[ -d "$backup_dir" ]] || return 0
+		
+		cd "$backup_dir" || return 1
+		
+		# Keep last N backups, remove older ones
+		ls -t | grep -v '\.meta$' | tail -n +$((keep + 1)) | while read -r old_backup; do
+			rm -f "$old_backup" "${old_backup}.meta"
+		done
+		
+		return 0
+	}
+
+	# Export configuration to portable format
+	# Usage: G_CONFIG_EXPORT "/etc/config.conf" "/backup/location/config.tar.gz"
+	G_CONFIG_EXPORT() {
+		local config_file=$1
+		local export_path=$2
+		
+		[[ -f "$config_file" ]] || return 1
+		
+		local temp_dir=$(mktemp -d)
+		local config_name=$(basename "$config_file")
+		
+		# Copy config and metadata
+		cp "$config_file" "$temp_dir/"
+		
+		# Create export metadata
+		cat > "$temp_dir/export.meta" <<-EOF
+		export_date=$(date '+%Y-%m-%d %H:%M:%S')
+		original_path=$config_file
+		hostname=$(hostname)
+		dietpi_version=${G_DIETPI_VERSION_CORE:-unknown}.${G_DIETPI_VERSION_SUB:-unknown}.${G_DIETPI_VERSION_RC:-unknown}
+		checksum=$(md5sum "$config_file" | awk '{print $1}')
+		EOF
+		
+		# Create archive
+		tar -czf "$export_path" -C "$temp_dir" .
+		rm -rf "$temp_dir"
+		
+		return 0
+	}
+
+	# Import configuration from portable format
+	# Usage: G_CONFIG_IMPORT "/backup/location/config.tar.gz" "/etc/config.conf"
+	G_CONFIG_IMPORT() {
+		local import_path=$1
+		local config_file=$2
+		
+		[[ -f "$import_path" ]] || return 1
+		
+		local temp_dir=$(mktemp -d)
+		
+		# Extract archive
+		tar -xzf "$import_path" -C "$temp_dir" || return 1
+		
+		# Verify metadata
+		if [[ -f "$temp_dir/export.meta" ]]; then
+			# shellcheck disable=SC1090
+			. "$temp_dir/export.meta"
+			echo "Importing configuration from: $hostname"
+			echo "Export date: $export_date"
+		fi
+		
+		# Find config file in archive
+		local imported_config=$(find "$temp_dir" -type f ! -name "*.meta" | head -n1)
+		[[ -f "$imported_config" ]] || return 1
+		
+		# Backup current config
+		[[ -f "$config_file" ]] && G_CONFIG_BACKUP "$config_file" "Pre-import backup" > /dev/null
+		
+		# Import
+		cp "$imported_config" "$config_file"
+		rm -rf "$temp_dir"
+		
+		return 0
+	}
+
+	# Validate all DietPi configurations
+	# Usage: G_CONFIG_VALIDATE_ALL
+	G_CONFIG_VALIDATE_ALL() {
+		local errors=0
+		
+		echo "Validating DietPi configurations..."
+		
+		# Check dietpi.txt
+		if [[ -f /boot/dietpi.txt ]]; then
+			if G_CONFIG_VALIDATE "/boot/dietpi.txt"; then
+				echo "✓ dietpi.txt: OK"
+			else
+				echo "✗ dietpi.txt: FAILED"
+				((errors++))
+			fi
+		fi
+		
+		# Check dietpi-globals
+		if [[ -f /boot/dietpi/func/dietpi-globals ]]; then
+			if bash -n /boot/dietpi/func/dietpi-globals 2>/dev/null; then
+				echo "✓ dietpi-globals: OK"
+			else
+				echo "✗ dietpi-globals: FAILED"
+				((errors++))
+			fi
+		fi
+		
+		# Check sysctl config
+		if [[ -f /etc/sysctl.d/97-dietpi.conf ]]; then
+			if sysctl -p /etc/sysctl.d/97-dietpi.conf &>/dev/null; then
+				echo "✓ sysctl config: OK"
+			else
+				echo "✗ sysctl config: FAILED"
+				((errors++))
+			fi
+		fi
+		
+		echo ""
+		if (( errors == 0 )); then
+			echo "All configurations valid ✓"
+			return 0
+		else
+			echo "Found $errors configuration error(s) ✗"
+			return 1
+		fi
+	}
+
+	# Create configuration snapshot (all DietPi configs)
+	# Usage: G_CONFIG_SNAPSHOT "snapshot_name"
+	G_CONFIG_SNAPSHOT() {
+		local snapshot_name=${1:-"snapshot_$(date +%Y%m%d_%H%M%S)"}
+		local snapshot_dir="$G_CONFIG_BACKUP_DIR/snapshots/$snapshot_name"
+		
+		mkdir -p "$snapshot_dir"
+		
+		# Backup key configuration files
+		[[ -f /boot/dietpi.txt ]] && cp /boot/dietpi.txt "$snapshot_dir/"
+		[[ -f /boot/dietpi/.installed ]] && cp /boot/dietpi/.installed "$snapshot_dir/"
+		[[ -f /boot/dietpi/.hw_model ]] && cp /boot/dietpi/.hw_model "$snapshot_dir/"
+		[[ -d /etc/sysctl.d ]] && cp -r /etc/sysctl.d "$snapshot_dir/"
+		
+		# Create snapshot metadata
+		cat > "$snapshot_dir/snapshot.meta" <<-EOF
+		snapshot_name=$snapshot_name
+		snapshot_date=$(date '+%Y-%m-%d %H:%M:%S')
+		hostname=$(hostname)
+		dietpi_version=${G_DIETPI_VERSION_CORE:-unknown}.${G_DIETPI_VERSION_SUB:-unknown}.${G_DIETPI_VERSION_RC:-unknown}
+		EOF
+		
+		echo "Snapshot created: $snapshot_dir"
+	}
+
+	# Restore from configuration snapshot
+	# Usage: G_CONFIG_RESTORE_SNAPSHOT "snapshot_name"
+	G_CONFIG_RESTORE_SNAPSHOT() {
+		local snapshot_name=$1
+		local snapshot_dir="$G_CONFIG_BACKUP_DIR/snapshots/$snapshot_name"
+		
+		[[ -d "$snapshot_dir" ]] || return 1
+		
+		echo "Restoring from snapshot: $snapshot_name"
+		
+		# Restore files
+		[[ -f "$snapshot_dir/dietpi.txt" ]] && cp "$snapshot_dir/dietpi.txt" /boot/
+		[[ -f "$snapshot_dir/.installed" ]] && cp "$snapshot_dir/.installed" /boot/dietpi/
+		[[ -d "$snapshot_dir/sysctl.d" ]] && cp -r "$snapshot_dir/sysctl.d/"* /etc/sysctl.d/
+		
+		echo "Snapshot restored successfully"
+		return 0
+	}
+
+	# Export functions
+	export -f G_CONFIG_INIT G_CONFIG_BACKUP G_CONFIG_RESTORE
+	export -f G_CONFIG_LIST_BACKUPS G_CONFIG_VALIDATE G_CONFIG_SAFE_UPDATE
+	export -f G_CONFIG_MERGE G_CONFIG_REMOVE G_CONFIG_GET
+	export -f G_CONFIG_HAS_CHANGED G_CONFIG_DIFF G_CONFIG_CLEANUP
+	export -f G_CONFIG_EXPORT G_CONFIG_IMPORT
+	export -f G_CONFIG_VALIDATE_ALL G_CONFIG_SNAPSHOT G_CONFIG_RESTORE_SNAPSHOT
+
+	# Initialize on load
+	G_CONFIG_INIT
+
+}

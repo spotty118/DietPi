@@ -1,0 +1,470 @@
+#!/bin/bash
+{
+	#////////////////////////////////////
+	# DietPi Enhanced UI Components
+	#
+	#////////////////////////////////////
+	# Created by DietPi Enhancement Project
+	#
+	#////////////////////////////////////
+	#
+	# Info:
+	# - Location: /boot/dietpi/func/dietpi-ui_enhanced
+	# - Provides modern UI components with progress indicators
+	# - Better user feedback and visual elements
+	# - Source this file in scripts: . /boot/dietpi/func/dietpi-ui_enhanced
+	#////////////////////////////////////
+
+	# UI Configuration
+	G_UI_ENABLE_COLORS=1
+	G_UI_ENABLE_UNICODE=1
+	G_UI_PROGRESS_WIDTH=50
+
+	# Color definitions
+	if [[ -t 1 && $G_UI_ENABLE_COLORS == 1 ]]; then
+		readonly G_UI_COLOR_RESET='\e[0m'
+		readonly G_UI_COLOR_BOLD='\e[1m'
+		readonly G_UI_COLOR_DIM='\e[2m'
+		readonly G_UI_COLOR_RED='\e[31m'
+		readonly G_UI_COLOR_GREEN='\e[32m'
+		readonly G_UI_COLOR_YELLOW='\e[33m'
+		readonly G_UI_COLOR_BLUE='\e[34m'
+		readonly G_UI_COLOR_MAGENTA='\e[35m'
+		readonly G_UI_COLOR_CYAN='\e[36m'
+		readonly G_UI_COLOR_WHITE='\e[37m'
+		readonly G_UI_COLOR_DIETPI='\e[38;5;154m'
+	else
+		readonly G_UI_COLOR_RESET=''
+		readonly G_UI_COLOR_BOLD=''
+		readonly G_UI_COLOR_DIM=''
+		readonly G_UI_COLOR_RED=''
+		readonly G_UI_COLOR_GREEN=''
+		readonly G_UI_COLOR_YELLOW=''
+		readonly G_UI_COLOR_BLUE=''
+		readonly G_UI_COLOR_MAGENTA=''
+		readonly G_UI_COLOR_CYAN=''
+		readonly G_UI_COLOR_WHITE=''
+		readonly G_UI_COLOR_DIETPI=''
+	fi
+
+	# Unicode symbols
+	if [[ $G_UI_ENABLE_UNICODE == 1 ]]; then
+		readonly G_UI_SYMBOL_CHECK='✓'
+		readonly G_UI_SYMBOL_CROSS='✗'
+		readonly G_UI_SYMBOL_ARROW='→'
+		readonly G_UI_SYMBOL_INFO='ℹ'
+		readonly G_UI_SYMBOL_WARNING='⚠'
+		readonly G_UI_SYMBOL_ERROR='✖'
+		readonly G_UI_SYMBOL_BULLET='•'
+		readonly G_UI_SYMBOL_SPINNER=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+	else
+		readonly G_UI_SYMBOL_CHECK='[OK]'
+		readonly G_UI_SYMBOL_CROSS='[X]'
+		readonly G_UI_SYMBOL_ARROW='->'
+		readonly G_UI_SYMBOL_INFO='[i]'
+		readonly G_UI_SYMBOL_WARNING='[!]'
+		readonly G_UI_SYMBOL_ERROR='[E]'
+		readonly G_UI_SYMBOL_BULLET='*'
+		readonly G_UI_SYMBOL_SPINNER=('|' '/' '-' '\\')
+	fi
+
+	#-----------------------------------------------------------------------------------
+	# Status Messages
+	#-----------------------------------------------------------------------------------
+
+	# Success message
+	# Usage: G_UI_SUCCESS "Operation completed"
+	G_UI_SUCCESS() {
+		local message=$*
+		echo -e "${G_UI_COLOR_GREEN}${G_UI_SYMBOL_CHECK}${G_UI_COLOR_RESET} ${G_UI_COLOR_BOLD}$message${G_UI_COLOR_RESET}"
+	}
+
+	# Error message
+	# Usage: G_UI_ERROR "Operation failed"
+	G_UI_ERROR() {
+		local message=$*
+		echo -e "${G_UI_COLOR_RED}${G_UI_SYMBOL_ERROR}${G_UI_COLOR_RESET} ${G_UI_COLOR_BOLD}$message${G_UI_COLOR_RESET}" >&2
+	}
+
+	# Warning message
+	# Usage: G_UI_WARNING "Potential issue detected"
+	G_UI_WARNING() {
+		local message=$*
+		echo -e "${G_UI_COLOR_YELLOW}${G_UI_SYMBOL_WARNING}${G_UI_COLOR_RESET} ${G_UI_COLOR_BOLD}$message${G_UI_COLOR_RESET}"
+	}
+
+	# Info message
+	# Usage: G_UI_INFO "Processing data"
+	G_UI_INFO() {
+		local message=$*
+		echo -e "${G_UI_COLOR_CYAN}${G_UI_SYMBOL_INFO}${G_UI_COLOR_RESET} $message"
+	}
+
+	# Step message (for multi-step operations)
+	# Usage: G_UI_STEP 1 5 "Installing packages"
+	G_UI_STEP() {
+		local current=$1
+		local total=$2
+		local message=$3
+		echo -e "${G_UI_COLOR_DIETPI}[${current}/${total}]${G_UI_COLOR_RESET} ${G_UI_SYMBOL_ARROW} $message"
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Progress Bars
+	#-----------------------------------------------------------------------------------
+
+	# Simple progress bar
+	# Usage: G_UI_PROGRESS_BAR 50 100
+	G_UI_PROGRESS_BAR() {
+		local current=$1
+		local total=$2
+		local message=${3:-""}
+		local width=${G_UI_PROGRESS_WIDTH:-50}
+		
+		local percent=$((current * 100 / total))
+		local filled=$((current * width / total))
+		local empty=$((width - filled))
+		
+		# Build progress bar
+		local bar="${G_UI_COLOR_GREEN}"
+		printf -v bar "%s%${filled}s" "$bar" ""
+		bar=${bar// /█}
+		bar="${bar}${G_UI_COLOR_DIM}"
+		printf -v bar "%s%${empty}s" "$bar" ""
+		bar=${bar// /░}
+		bar="${bar}${G_UI_COLOR_RESET}"
+		
+		# Print progress bar
+		printf "\r%s [%s] %3d%%" "$message" "$bar" "$percent"
+		
+		# New line when complete
+		[[ $current -eq $total ]] && echo
+	}
+
+	# Progress bar with ETA
+	# Usage: G_UI_PROGRESS_BAR_ETA 50 100 1234567890 "Downloading"
+	G_UI_PROGRESS_BAR_ETA() {
+		local current=$1
+		local total=$2
+		local start_time=$3
+		local message=${4:-""}
+		
+		local elapsed=$(($(date +%s) - start_time))
+		local percent=$((current * 100 / total))
+		
+		# Calculate ETA
+		local eta="--:--"
+		if (( current > 0 && elapsed > 0 )); then
+			local rate=$((current / elapsed))
+			if (( rate > 0 )); then
+				local remaining=$((total - current))
+				local eta_seconds=$((remaining / rate))
+				eta=$(printf "%02d:%02d" $((eta_seconds / 60)) $((eta_seconds % 60)))
+			fi
+		fi
+		
+		# Build progress bar
+		local width=$((G_UI_PROGRESS_WIDTH - 15))
+		local filled=$((current * width / total))
+		local empty=$((width - filled))
+		
+		local bar="${G_UI_COLOR_GREEN}"
+		printf -v bar "%s%${filled}s" "$bar" ""
+		bar=${bar// /█}
+		bar="${bar}${G_UI_COLOR_DIM}"
+		printf -v bar "%s%${empty}s" "$bar" ""
+		bar=${bar// /░}
+		bar="${bar}${G_UI_COLOR_RESET}"
+		
+		printf "\r%s [%s] %3d%% ETA: %s" "$message" "$bar" "$percent" "$eta"
+		
+		[[ $current -eq $total ]] && echo
+	}
+
+	# Indeterminate progress (spinner)
+	# Usage: long_task & G_UI_SPINNER $! "Processing"
+	G_UI_SPINNER() {
+		local pid=$1
+		local message=${2:-"Working"}
+		local i=0
+		local spinner_count=${#G_UI_SYMBOL_SPINNER[@]}
+		
+		while kill -0 "$pid" 2>/dev/null; do
+			printf "\r%s %s " "$message" "${G_UI_SYMBOL_SPINNER[$i]}"
+			i=$(( (i + 1) % spinner_count ))
+			sleep 0.1
+		done
+		
+		# Check exit status
+		wait "$pid"
+		local exit_code=$?
+		
+		if (( exit_code == 0 )); then
+			printf "\r%s ${G_UI_COLOR_GREEN}${G_UI_SYMBOL_CHECK}${G_UI_COLOR_RESET}\n" "$message"
+		else
+			printf "\r%s ${G_UI_COLOR_RED}${G_UI_SYMBOL_CROSS}${G_UI_COLOR_RESET}\n" "$message"
+		fi
+		
+		return "$exit_code"
+	}
+
+	# Multi-line progress display
+	# Usage: G_UI_PROGRESS_MULTI "Task 1" 50 "Task 2" 75 "Task 3" 100
+	G_UI_PROGRESS_MULTI() {
+		local -a tasks=("$@")
+		local task_count=$((${#tasks[@]} / 2))
+		
+		# Save cursor position
+		tput sc
+		
+		local i
+		for ((i=0; i<task_count; i++)); do
+			local task_name=${tasks[$((i * 2))]}
+			local task_progress=${tasks[$((i * 2 + 1))]}
+			
+			G_UI_PROGRESS_BAR "$task_progress" 100 "$task_name"
+		done
+		
+		# Restore cursor position
+		tput rc
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Tables & Lists
+	#-----------------------------------------------------------------------------------
+
+	# Print table header
+	# Usage: G_UI_TABLE_HEADER "Column1" "Column2" "Column3"
+	G_UI_TABLE_HEADER() {
+		local -a headers=("$@")
+		local col_width=20
+		
+		echo -e "${G_UI_COLOR_BOLD}"
+		printf "%-${col_width}s" "${headers[@]}"
+		echo -e "${G_UI_COLOR_RESET}"
+		
+		# Print separator
+		local total_width=$((col_width * ${#headers[@]}))
+		printf "%${total_width}s\n" "" | tr ' ' '─'
+	}
+
+	# Print table row
+	# Usage: G_UI_TABLE_ROW "Value1" "Value2" "Value3"
+	G_UI_TABLE_ROW() {
+		local -a values=("$@")
+		local col_width=20
+		
+		printf "%-${col_width}s" "${values[@]}"
+		echo
+	}
+
+	# Print bullet list
+	# Usage: G_UI_LIST "Item 1" "Item 2" "Item 3"
+	G_UI_LIST() {
+		local item
+		for item in "$@"; do
+			echo -e "  ${G_UI_COLOR_DIETPI}${G_UI_SYMBOL_BULLET}${G_UI_COLOR_RESET} $item"
+		done
+	}
+
+	# Print numbered list
+	# Usage: G_UI_LIST_NUMBERED "Item 1" "Item 2" "Item 3"
+	G_UI_LIST_NUMBERED() {
+		local i=1
+		local item
+		for item in "$@"; do
+			echo -e "  ${G_UI_COLOR_DIETPI}${i}.${G_UI_COLOR_RESET} $item"
+			((i++))
+		done
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Boxes & Panels
+	#-----------------------------------------------------------------------------------
+
+	# Print box around text
+	# Usage: G_UI_BOX "Title" "Line 1" "Line 2" "Line 3"
+	G_UI_BOX() {
+		local title=$1
+		shift
+		local -a lines=("$@")
+		
+		# Calculate box width
+		local max_width=0
+		local line
+		for line in "$title" "${lines[@]}"; do
+			local len=${#line}
+			(( len > max_width )) && max_width=$len
+		done
+		
+		local box_width=$((max_width + 4))
+		
+		# Top border
+		echo -e "${G_UI_COLOR_DIETPI}╔$(printf "%${box_width}s" "" | tr ' ' '═')╗${G_UI_COLOR_RESET}"
+		
+		# Title
+		if [[ -n "$title" ]]; then
+			printf "${G_UI_COLOR_DIETPI}║${G_UI_COLOR_RESET} ${G_UI_COLOR_BOLD}%-${max_width}s${G_UI_COLOR_RESET} ${G_UI_COLOR_DIETPI}║${G_UI_COLOR_RESET}\n" "$title"
+			echo -e "${G_UI_COLOR_DIETPI}╠$(printf "%${box_width}s" "" | tr ' ' '═')╣${G_UI_COLOR_RESET}"
+		fi
+		
+		# Content lines
+		for line in "${lines[@]}"; do
+			printf "${G_UI_COLOR_DIETPI}║${G_UI_COLOR_RESET} %-${max_width}s ${G_UI_COLOR_DIETPI}║${G_UI_COLOR_RESET}\n" "$line"
+		done
+		
+		# Bottom border
+		echo -e "${G_UI_COLOR_DIETPI}╚$(printf "%${box_width}s" "" | tr ' ' '═')╝${G_UI_COLOR_RESET}"
+	}
+
+	# Print section header
+	# Usage: G_UI_SECTION "System Information"
+	G_UI_SECTION() {
+		local title=$1
+		local width=60
+		
+		echo
+		echo -e "${G_UI_COLOR_DIETPI}$(printf "%${width}s" "" | tr ' ' '═')${G_UI_COLOR_RESET}"
+		echo -e "${G_UI_COLOR_BOLD}  $title${G_UI_COLOR_RESET}"
+		echo -e "${G_UI_COLOR_DIETPI}$(printf "%${width}s" "" | tr ' ' '═')${G_UI_COLOR_RESET}"
+		echo
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Interactive Elements
+	#-----------------------------------------------------------------------------------
+
+	# Confirmation prompt with default
+	# Usage: G_UI_CONFIRM "Continue?" && echo "Yes"
+	G_UI_CONFIRM() {
+		local message=$1
+		local default=${2:-"y"}
+		
+		local prompt
+		if [[ ${default,,} == "y" ]]; then
+			prompt="[Y/n]"
+		else
+			prompt="[y/N]"
+		fi
+		
+		echo -ne "${G_UI_COLOR_CYAN}${G_UI_SYMBOL_INFO}${G_UI_COLOR_RESET} $message $prompt "
+		read -r response
+		
+		response=${response:-$default}
+		[[ ${response,,} == "y" ]]
+	}
+
+	# Select from list
+	# Usage: choice=$(G_UI_SELECT "Choose option:" "Option 1" "Option 2" "Option 3")
+	G_UI_SELECT() {
+		local prompt=$1
+		shift
+		local -a options=("$@")
+		
+		echo -e "${G_UI_COLOR_BOLD}$prompt${G_UI_COLOR_RESET}"
+		
+		local i
+		for ((i=0; i<${#options[@]}; i++)); do
+			echo -e "  ${G_UI_COLOR_DIETPI}$((i+1)).${G_UI_COLOR_RESET} ${options[$i]}"
+		done
+		
+		echo -ne "\n${G_UI_COLOR_CYAN}Enter choice [1-${#options[@]}]:${G_UI_COLOR_RESET} "
+		read -r choice
+		
+		if [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
+			echo "${options[$((choice-1))]}"
+			return 0
+		else
+			return 1
+		fi
+	}
+
+	#-----------------------------------------------------------------------------------
+	# System Status Display
+	#-----------------------------------------------------------------------------------
+
+	# Display system status summary
+	# Usage: G_UI_SYSTEM_STATUS
+	G_UI_SYSTEM_STATUS() {
+		G_UI_SECTION "System Status"
+		
+		# CPU
+		local cpu_count=$(nproc)
+		local load_avg=$(awk '{print $1}' /proc/loadavg)
+		echo -e "  ${G_UI_COLOR_BOLD}CPU:${G_UI_COLOR_RESET}     $cpu_count cores, Load: $load_avg"
+		
+		# Memory
+		local mem_total=$(free -h | awk '/^Mem:/{print $2}')
+		local mem_used=$(free -h | awk '/^Mem:/{print $3}')
+		local mem_percent=$(free | awk '/^Mem:/{printf "%.0f", $3/$2*100}')
+		echo -e "  ${G_UI_COLOR_BOLD}Memory:${G_UI_COLOR_RESET}  $mem_used / $mem_total (${mem_percent}%)"
+		
+		# Disk
+		local disk_total=$(df -h / | awk 'NR==2{print $2}')
+		local disk_used=$(df -h / | awk 'NR==2{print $3}')
+		local disk_percent=$(df / | awk 'NR==2{print $5}')
+		echo -e "  ${G_UI_COLOR_BOLD}Disk:${G_UI_COLOR_RESET}    $disk_used / $disk_total ($disk_percent)"
+		
+		# Uptime
+		local uptime_seconds=$(awk '{print int($1)}' /proc/uptime)
+		local uptime_days=$((uptime_seconds / 86400))
+		local uptime_hours=$(( (uptime_seconds % 86400) / 3600 ))
+		echo -e "  ${G_UI_COLOR_BOLD}Uptime:${G_UI_COLOR_RESET}  ${uptime_days}d ${uptime_hours}h"
+		
+		# Temperature (if available)
+		local temp_file
+		for temp_file in /sys/class/thermal/thermal_zone*/temp; do
+			if [[ -f "$temp_file" ]]; then
+				local temp=$(($(cat "$temp_file") / 1000))
+				echo -e "  ${G_UI_COLOR_BOLD}Temp:${G_UI_COLOR_RESET}    ${temp}°C"
+				break
+			fi
+		done
+		
+		echo
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Task Progress Tracker
+	#-----------------------------------------------------------------------------------
+
+	# Initialize task tracker
+	# Usage: G_UI_TASK_INIT "Installing Software" 5
+	G_UI_TASK_INIT() {
+		export G_UI_TASK_NAME=$1
+		export G_UI_TASK_TOTAL=$2
+		export G_UI_TASK_CURRENT=0
+		export G_UI_TASK_START_TIME=$(date +%s)
+	}
+
+	# Update task progress
+	# Usage: G_UI_TASK_UPDATE "Installing package X"
+	G_UI_TASK_UPDATE() {
+		local subtask=$1
+		((G_UI_TASK_CURRENT++))
+		
+		G_UI_STEP "$G_UI_TASK_CURRENT" "$G_UI_TASK_TOTAL" "$subtask"
+		G_UI_PROGRESS_BAR "$G_UI_TASK_CURRENT" "$G_UI_TASK_TOTAL" "$G_UI_TASK_NAME"
+	}
+
+	# Complete task
+	# Usage: G_UI_TASK_COMPLETE
+	G_UI_TASK_COMPLETE() {
+		local elapsed=$(($(date +%s) - G_UI_TASK_START_TIME))
+		G_UI_SUCCESS "$G_UI_TASK_NAME completed in ${elapsed}s"
+		
+		unset G_UI_TASK_NAME G_UI_TASK_TOTAL G_UI_TASK_CURRENT G_UI_TASK_START_TIME
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Export functions
+	#-----------------------------------------------------------------------------------
+	export -f G_UI_SUCCESS G_UI_ERROR G_UI_WARNING G_UI_INFO G_UI_STEP
+	export -f G_UI_PROGRESS_BAR G_UI_PROGRESS_BAR_ETA G_UI_SPINNER G_UI_PROGRESS_MULTI
+	export -f G_UI_TABLE_HEADER G_UI_TABLE_ROW G_UI_LIST G_UI_LIST_NUMBERED
+	export -f G_UI_BOX G_UI_SECTION
+	export -f G_UI_CONFIRM G_UI_SELECT
+	export -f G_UI_SYSTEM_STATUS
+	export -f G_UI_TASK_INIT G_UI_TASK_UPDATE G_UI_TASK_COMPLETE
+
+}

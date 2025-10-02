@@ -1,0 +1,513 @@
+#!/bin/bash
+{
+	#////////////////////////////////////
+	# DietPi Performance Monitor
+	#
+	#////////////////////////////////////
+	# Created by DietPi Enhancement Project
+	#
+	#////////////////////////////////////
+	#
+	# Info:
+	# - Location: /boot/dietpi/func/dietpi-performance_monitor
+	# - Provides real-time performance monitoring and metrics collection
+	# - Lightweight and optimized for SBCs
+	# - Source this file in scripts: . /boot/dietpi/func/dietpi-performance_monitor
+	#////////////////////////////////////
+
+	# Configuration
+	readonly G_PERF_METRICS_DIR="/var/lib/dietpi/metrics"
+	readonly G_PERF_LOG_DIR="/var/log/dietpi/performance"
+	readonly G_PERF_HISTORY_DAYS=7
+	G_PERF_MONITOR_INTERVAL=5
+
+	# Initialize performance monitor
+	G_PERF_INIT() {
+		mkdir -p "$G_PERF_METRICS_DIR"
+		mkdir -p "$G_PERF_LOG_DIR"
+	}
+
+	#-----------------------------------------------------------------------------------
+	# CPU Metrics
+	#-----------------------------------------------------------------------------------
+
+	# Get CPU usage percentage
+	# Usage: cpu_usage=$(G_PERF_GET_CPU_USAGE)
+	G_PERF_GET_CPU_USAGE() {
+		local prev_idle prev_total
+		read -r prev_idle prev_total < <(awk '/^cpu /{print $5, $2+$3+$4+$5+$6+$7+$8}' /proc/stat)
+		
+		sleep 0.5
+		
+		local idle total
+		read -r idle total < <(awk '/^cpu /{print $5, $2+$3+$4+$5+$6+$7+$8}' /proc/stat)
+		
+		local diff_idle=$((idle - prev_idle))
+		local diff_total=$((total - prev_total))
+		local cpu_usage=$((100 * (diff_total - diff_idle) / diff_total))
+		
+		echo "$cpu_usage"
+	}
+
+	# Get per-core CPU usage
+	# Usage: G_PERF_GET_CPU_USAGE_PER_CORE
+	G_PERF_GET_CPU_USAGE_PER_CORE() {
+		local cpu_count=$(nproc)
+		local i
+		
+		for ((i=0; i<cpu_count; i++)); do
+			local usage=$(mpstat -P "$i" 1 1 | awk '/Average:/{print 100-$NF}')
+			echo "CPU$i: ${usage}%"
+		done
+	}
+
+	# Get CPU frequency
+	# Usage: freq=$(G_PERF_GET_CPU_FREQ)
+	G_PERF_GET_CPU_FREQ() {
+		local freq_file="/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
+		
+		if [[ -f "$freq_file" ]]; then
+			local freq_khz=$(cat "$freq_file")
+			local freq_mhz=$((freq_khz / 1000))
+			echo "$freq_mhz"
+		else
+			echo "N/A"
+		fi
+	}
+
+	# Get CPU temperature
+	# Usage: temp=$(G_PERF_GET_CPU_TEMP)
+	G_PERF_GET_CPU_TEMP() {
+		local temp_file
+		for temp_file in /sys/class/thermal/thermal_zone*/temp; do
+			[[ -f "$temp_file" ]] || continue
+			local temp=$(cat "$temp_file")
+			echo "$((temp / 1000))"
+			return 0
+		done
+		echo "N/A"
+	}
+
+	# Get load average
+	# Usage: load=$(G_PERF_GET_LOAD_AVG)
+	G_PERF_GET_LOAD_AVG() {
+		awk '{print $1, $2, $3}' /proc/loadavg
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Memory Metrics
+	#-----------------------------------------------------------------------------------
+
+	# Get memory usage
+	# Usage: G_PERF_GET_MEMORY_USAGE
+	G_PERF_GET_MEMORY_USAGE() {
+		free -m | awk '
+		/^Mem:/{
+			total=$2
+			used=$3
+			free=$4
+			available=$7
+			percent=int(used/total*100)
+			print "Total: "total"MB"
+			print "Used: "used"MB ("percent"%)"
+			print "Free: "free"MB"
+			print "Available: "available"MB"
+		}'
+	}
+
+	# Get memory usage percentage
+	# Usage: percent=$(G_PERF_GET_MEMORY_PERCENT)
+	G_PERF_GET_MEMORY_PERCENT() {
+		free | awk '/^Mem:/{printf "%.0f", $3/$2*100}'
+	}
+
+	# Get swap usage
+	# Usage: G_PERF_GET_SWAP_USAGE
+	G_PERF_GET_SWAP_USAGE() {
+		free -m | awk '
+		/^Swap:/{
+			total=$2
+			used=$3
+			free=$4
+			if(total>0) percent=int(used/total*100); else percent=0
+			print "Total: "total"MB"
+			print "Used: "used"MB ("percent"%)"
+			print "Free: "free"MB"
+		}'
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Disk Metrics
+	#-----------------------------------------------------------------------------------
+
+	# Get disk usage
+	# Usage: G_PERF_GET_DISK_USAGE [mount_point]
+	G_PERF_GET_DISK_USAGE() {
+		local mount=${1:-/}
+		
+		df -h "$mount" | awk 'NR==2{
+			print "Filesystem: "$1
+			print "Size: "$2
+			print "Used: "$3" ("$5")"
+			print "Available: "$4
+		}'
+	}
+
+	# Get disk I/O statistics
+	# Usage: G_PERF_GET_DISK_IO [device]
+	G_PERF_GET_DISK_IO() {
+		local device=${1:-$(df / | awk 'NR==2{print $1}' | sed 's|/dev/||;s|[0-9]*$||')}
+		
+		if [[ -f "/sys/block/$device/stat" ]]; then
+			read -r reads reads_merged sectors_read ms_reading writes writes_merged sectors_written ms_writing io_in_progress ms_io time_in_queue < "/sys/block/$device/stat"
+			
+			echo "Device: $device"
+			echo "Reads: $reads"
+			echo "Writes: $writes"
+			echo "Sectors Read: $sectors_read"
+			echo "Sectors Written: $sectors_written"
+		else
+			echo "Device not found: $device"
+		fi
+	}
+
+	# Get disk I/O rate
+	# Usage: G_PERF_GET_DISK_IO_RATE [device]
+	G_PERF_GET_DISK_IO_RATE() {
+		local device=${1:-$(df / | awk 'NR==2{print $1}' | sed 's|/dev/||;s|[0-9]*$||')}
+		
+		if ! command -v iostat &> /dev/null; then
+			echo "iostat not available (install sysstat)"
+			return 1
+		fi
+		
+		iostat -d "$device" 1 2 | awk '/^'$device'/{if(NR>1){print "Read: "$3" kB/s, Write: "$4" kB/s"}}'
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Network Metrics
+	#-----------------------------------------------------------------------------------
+
+	# Get network interface statistics
+	# Usage: G_PERF_GET_NETWORK_STATS [interface]
+	G_PERF_GET_NETWORK_STATS() {
+		local iface=${1:-$(ip route | awk '/^default/{print $5; exit}')}
+		
+		if [[ -d "/sys/class/net/$iface" ]]; then
+			local rx_bytes=$(cat "/sys/class/net/$iface/statistics/rx_bytes")
+			local tx_bytes=$(cat "/sys/class/net/$iface/statistics/tx_bytes")
+			local rx_packets=$(cat "/sys/class/net/$iface/statistics/rx_packets")
+			local tx_packets=$(cat "/sys/class/net/$iface/statistics/tx_packets")
+			local rx_errors=$(cat "/sys/class/net/$iface/statistics/rx_errors")
+			local tx_errors=$(cat "/sys/class/net/$iface/statistics/tx_errors")
+			
+			echo "Interface: $iface"
+			echo "RX: $(numfmt --to=iec-i --suffix=B $rx_bytes) ($rx_packets packets, $rx_errors errors)"
+			echo "TX: $(numfmt --to=iec-i --suffix=B $tx_bytes) ($tx_packets packets, $tx_errors errors)"
+		else
+			echo "Interface not found: $iface"
+		fi
+	}
+
+	# Get network bandwidth usage
+	# Usage: G_PERF_GET_NETWORK_BANDWIDTH [interface]
+	G_PERF_GET_NETWORK_BANDWIDTH() {
+		local iface=${1:-$(ip route | awk '/^default/{print $5; exit}')}
+		
+		[[ -d "/sys/class/net/$iface" ]] || return 1
+		
+		local rx1=$(cat "/sys/class/net/$iface/statistics/rx_bytes")
+		local tx1=$(cat "/sys/class/net/$iface/statistics/tx_bytes")
+		
+		sleep 1
+		
+		local rx2=$(cat "/sys/class/net/$iface/statistics/rx_bytes")
+		local tx2=$(cat "/sys/class/net/$iface/statistics/tx_bytes")
+		
+		local rx_rate=$((rx2 - rx1))
+		local tx_rate=$((tx2 - tx1))
+		
+		echo "Interface: $iface"
+		echo "Download: $(numfmt --to=iec-i --suffix=B/s $rx_rate)"
+		echo "Upload: $(numfmt --to=iec-i --suffix=B/s $tx_rate)"
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Process Metrics
+	#-----------------------------------------------------------------------------------
+
+	# Get top processes by CPU
+	# Usage: G_PERF_GET_TOP_CPU [count]
+	G_PERF_GET_TOP_CPU() {
+		local count=${1:-10}
+		
+		echo "Top $count processes by CPU usage:"
+		ps aux --sort=-%cpu | head -n $((count + 1)) | awk 'NR==1{print "USER       PID  %CPU %MEM COMMAND"} NR>1{printf "%-10s %5s %5s %5s %s\n", $1, $2, $3, $4, $11}'
+	}
+
+	# Get top processes by memory
+	# Usage: G_PERF_GET_TOP_MEMORY [count]
+	G_PERF_GET_TOP_MEMORY() {
+		local count=${1:-10}
+		
+		echo "Top $count processes by memory usage:"
+		ps aux --sort=-%mem | head -n $((count + 1)) | awk 'NR==1{print "USER       PID  %CPU %MEM COMMAND"} NR>1{printf "%-10s %5s %5s %5s %s\n", $1, $2, $3, $4, $11}'
+	}
+
+	# Get process count
+	# Usage: count=$(G_PERF_GET_PROCESS_COUNT)
+	G_PERF_GET_PROCESS_COUNT() {
+		ps aux | wc -l
+	}
+
+	#-----------------------------------------------------------------------------------
+	# System Metrics Collection
+	#-----------------------------------------------------------------------------------
+
+	# Collect all metrics snapshot
+	# Usage: G_PERF_COLLECT_SNAPSHOT
+	G_PERF_COLLECT_SNAPSHOT() {
+		local timestamp=$(date +%s)
+		local snapshot_file="$G_PERF_METRICS_DIR/snapshot_${timestamp}.txt"
+		
+		{
+			echo "=== DietPi Performance Snapshot ==="
+			echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+			echo "Uptime: $(uptime -p)"
+			echo ""
+			
+			echo "=== CPU ==="
+			echo "Usage: $(G_PERF_GET_CPU_USAGE)%"
+			echo "Frequency: $(G_PERF_GET_CPU_FREQ) MHz"
+			echo "Temperature: $(G_PERF_GET_CPU_TEMP)°C"
+			echo "Load Average: $(G_PERF_GET_LOAD_AVG)"
+			echo ""
+			
+			echo "=== Memory ==="
+			G_PERF_GET_MEMORY_USAGE
+			echo ""
+			
+			echo "=== Swap ==="
+			G_PERF_GET_SWAP_USAGE
+			echo ""
+			
+			echo "=== Disk ==="
+			G_PERF_GET_DISK_USAGE /
+			echo ""
+			
+			echo "=== Network ==="
+			G_PERF_GET_NETWORK_STATS
+			echo ""
+			
+			echo "=== Processes ==="
+			echo "Total: $(G_PERF_GET_PROCESS_COUNT)"
+			
+		} > "$snapshot_file"
+		
+		echo "$snapshot_file"
+	}
+
+	# Start continuous monitoring
+	# Usage: G_PERF_START_MONITOR [interval_seconds]
+	G_PERF_START_MONITOR() {
+		local interval=${1:-$G_PERF_MONITOR_INTERVAL}
+		local log_file="$G_PERF_LOG_DIR/monitor_$(date +%Y%m%d).csv"
+		
+		# Create CSV header if file doesn't exist
+		if [[ ! -f "$log_file" ]]; then
+			echo "timestamp,cpu_usage,cpu_temp,mem_percent,load_1m,disk_usage" > "$log_file"
+		fi
+		
+		echo "Starting performance monitor (interval: ${interval}s)"
+		echo "Log file: $log_file"
+		echo "Press Ctrl+C to stop"
+		
+		while true; do
+			local timestamp=$(date +%s)
+			local cpu_usage=$(G_PERF_GET_CPU_USAGE)
+			local cpu_temp=$(G_PERF_GET_CPU_TEMP)
+			local mem_percent=$(G_PERF_GET_MEMORY_PERCENT)
+			local load_1m=$(awk '{print $1}' /proc/loadavg)
+			local disk_usage=$(df / | awk 'NR==2{print $5}' | tr -d '%')
+			
+			echo "$timestamp,$cpu_usage,$cpu_temp,$mem_percent,$load_1m,$disk_usage" >> "$log_file"
+			
+			# Display current metrics
+			echo -ne "\r[$(date '+%H:%M:%S')] CPU: ${cpu_usage}% | Temp: ${cpu_temp}°C | Mem: ${mem_percent}% | Load: ${load_1m} | Disk: ${disk_usage}%  "
+			
+			sleep "$interval"
+		done
+	}
+
+	# Generate performance report
+	# Usage: G_PERF_GENERATE_REPORT [days]
+	G_PERF_GENERATE_REPORT() {
+		local days=${1:-1}
+		local report_file="$G_PERF_LOG_DIR/report_$(date +%Y%m%d_%H%M%S).txt"
+		
+		{
+			echo "=== DietPi Performance Report ==="
+			echo "Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+			echo "Period: Last $days day(s)"
+			echo ""
+			
+			# Find log files from last N days
+			local log_files=$(find "$G_PERF_LOG_DIR" -name "monitor_*.csv" -mtime -"$days" | sort)
+			
+			if [[ -z "$log_files" ]]; then
+				echo "No monitoring data found for the specified period"
+			else
+				echo "=== Summary Statistics ==="
+				
+				# Combine all CSV files and calculate statistics
+				{
+					for log_file in $log_files; do
+						tail -n +2 "$log_file"  # Skip header
+					done
+				} | awk -F, '
+				BEGIN {
+					count=0
+					sum_cpu=0; sum_temp=0; sum_mem=0; sum_load=0; sum_disk=0
+					max_cpu=0; max_temp=0; max_mem=0; max_load=0; max_disk=0
+					min_cpu=100; min_temp=100; min_mem=100; min_load=100; min_disk=100
+				}
+				{
+					count++
+					sum_cpu+=$2; sum_temp+=$3; sum_mem+=$4; sum_load+=$5; sum_disk+=$6
+					if($2>max_cpu) max_cpu=$2
+					if($3>max_temp) max_temp=$3
+					if($4>max_mem) max_mem=$4
+					if($5>max_load) max_load=$5
+					if($6>max_disk) max_disk=$6
+					if($2<min_cpu) min_cpu=$2
+					if($3<min_temp) min_temp=$3
+					if($4<min_mem) min_mem=$4
+					if($5<min_load) min_load=$5
+					if($6<min_disk) min_disk=$6
+				}
+				END {
+					if(count>0) {
+						print "Data points: "count
+						print ""
+						print "CPU Usage:"
+						print "  Average: "sum_cpu/count"%"
+						print "  Min: "min_cpu"%"
+						print "  Max: "max_cpu"%"
+						print ""
+						print "CPU Temperature:"
+						print "  Average: "sum_temp/count"°C"
+						print "  Min: "min_temp"°C"
+						print "  Max: "max_temp"°C"
+						print ""
+						print "Memory Usage:"
+						print "  Average: "sum_mem/count"%"
+						print "  Min: "min_mem"%"
+						print "  Max: "max_mem"%"
+						print ""
+						print "Load Average:"
+						print "  Average: "sum_load/count
+						print "  Min: "min_load
+						print "  Max: "max_load
+						print ""
+						print "Disk Usage:"
+						print "  Average: "sum_disk/count"%"
+						print "  Min: "min_disk"%"
+						print "  Max: "max_disk"%"
+					}
+				}'
+			fi
+			
+		} | tee "$report_file"
+		
+		echo ""
+		echo "Report saved to: $report_file"
+	}
+
+	# Clean old performance logs
+	# Usage: G_PERF_CLEANUP [days_to_keep]
+	G_PERF_CLEANUP() {
+		local days=${1:-$G_PERF_HISTORY_DAYS}
+		
+		echo "Cleaning performance logs older than $days days..."
+		
+		find "$G_PERF_LOG_DIR" -name "monitor_*.csv" -mtime +$days -delete
+		find "$G_PERF_METRICS_DIR" -name "snapshot_*.txt" -mtime +$days -delete
+		
+		echo "Cleanup complete"
+	}
+
+	# Display real-time dashboard
+	# Usage: G_PERF_DASHBOARD
+	G_PERF_DASHBOARD() {
+		# Clear screen
+		clear
+		
+		while true; do
+			# Move cursor to top
+			tput cup 0 0
+			
+			echo "╔════════════════════════════════════════════════════════════════╗"
+			echo "║              DietPi Performance Dashboard                      ║"
+			echo "╠════════════════════════════════════════════════════════════════╣"
+			
+			# CPU
+			local cpu_usage=$(G_PERF_GET_CPU_USAGE)
+			local cpu_freq=$(G_PERF_GET_CPU_FREQ)
+			local cpu_temp=$(G_PERF_GET_CPU_TEMP)
+			printf "║ CPU Usage:    %3s%%  │  Frequency: %4s MHz  │  Temp: %3s°C  ║\n" "$cpu_usage" "$cpu_freq" "$cpu_temp"
+			
+			# Load
+			local load=$(G_PERF_GET_LOAD_AVG)
+			printf "║ Load Average: %-40s ║\n" "$load"
+			
+			echo "╠════════════════════════════════════════════════════════════════╣"
+			
+			# Memory
+			local mem_percent=$(G_PERF_GET_MEMORY_PERCENT)
+			local mem_info=$(free -h | awk '/^Mem:/{print $3"/"$2}')
+			printf "║ Memory:       %3s%%  │  Used/Total: %-20s ║\n" "$mem_percent" "$mem_info"
+			
+			# Disk
+			local disk_percent=$(df / | awk 'NR==2{print $5}' | tr -d '%')
+			local disk_info=$(df -h / | awk 'NR==2{print $3"/"$2}')
+			printf "║ Disk:         %3s%%  │  Used/Total: %-20s ║\n" "$disk_percent" "$disk_info"
+			
+			echo "╠════════════════════════════════════════════════════════════════╣"
+			
+			# Network
+			local iface=$(ip route | awk '/^default/{print $5; exit}')
+			printf "║ Network Interface: %-40s ║\n" "$iface"
+			
+			echo "╠════════════════════════════════════════════════════════════════╣"
+			
+			# Uptime
+			local uptime=$(uptime -p)
+			printf "║ Uptime: %-51s ║\n" "$uptime"
+			
+			# Time
+			local current_time=$(date '+%Y-%m-%d %H:%M:%S')
+			printf "║ Current Time: %-44s ║\n" "$current_time"
+			
+			echo "╚════════════════════════════════════════════════════════════════╝"
+			echo ""
+			echo "Press Ctrl+C to exit"
+			
+			sleep 2
+		done
+	}
+
+	# Export functions
+	export -f G_PERF_INIT
+	export -f G_PERF_GET_CPU_USAGE G_PERF_GET_CPU_USAGE_PER_CORE
+	export -f G_PERF_GET_CPU_FREQ G_PERF_GET_CPU_TEMP G_PERF_GET_LOAD_AVG
+	export -f G_PERF_GET_MEMORY_USAGE G_PERF_GET_MEMORY_PERCENT G_PERF_GET_SWAP_USAGE
+	export -f G_PERF_GET_DISK_USAGE G_PERF_GET_DISK_IO G_PERF_GET_DISK_IO_RATE
+	export -f G_PERF_GET_NETWORK_STATS G_PERF_GET_NETWORK_BANDWIDTH
+	export -f G_PERF_GET_TOP_CPU G_PERF_GET_TOP_MEMORY G_PERF_GET_PROCESS_COUNT
+	export -f G_PERF_COLLECT_SNAPSHOT G_PERF_START_MONITOR
+	export -f G_PERF_GENERATE_REPORT G_PERF_CLEANUP G_PERF_DASHBOARD
+
+	# Initialize on load
+	G_PERF_INIT
+
+}

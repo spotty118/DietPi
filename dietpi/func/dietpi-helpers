@@ -1,0 +1,434 @@
+#!/bin/bash
+{
+	#////////////////////////////////////
+	# DietPi Helper Functions Library
+	#
+	#////////////////////////////////////
+	# Created by DietPi Enhancement Project
+	#
+	#////////////////////////////////////
+	#
+	# Info:
+	# - Location: /boot/dietpi/func/dietpi-helpers
+	# - Provides reusable helper functions to reduce code duplication
+	# - Safe, tested functions with proper error handling
+	# - Source this file in scripts: . /boot/dietpi/func/dietpi-helpers
+	#////////////////////////////////////
+
+	#-----------------------------------------------------------------------------------
+	# Validation Functions
+	#-----------------------------------------------------------------------------------
+
+	# Validate if a command exists
+	# Usage: G_CHECK_COMMAND "command_name" || { echo "Command not found"; exit 1; }
+	G_CHECK_COMMAND() {
+		command -v "$1" &> /dev/null
+	}
+
+	# Validate if a file exists and is readable
+	# Usage: G_CHECK_FILE "/path/to/file" || { echo "File not found"; exit 1; }
+	G_CHECK_FILE() {
+		[[ -f "$1" && -r "$1" ]]
+	}
+
+	# Validate if a directory exists and is accessible
+	# Usage: G_CHECK_DIR "/path/to/dir" || { echo "Directory not found"; exit 1; }
+	G_CHECK_DIR() {
+		[[ -d "$1" && -x "$1" ]]
+	}
+
+	# Validate if running as root
+	# Usage: G_CHECK_ROOT || { echo "Must run as root"; exit 1; }
+	G_CHECK_ROOT() {
+		[[ $EUID == 0 ]]
+	}
+
+	# Validate if a port is available
+	# Usage: G_CHECK_PORT 80 || { echo "Port 80 in use"; exit 1; }
+	G_CHECK_PORT() {
+		! ss -tlnp 2>/dev/null | grep -q ":$1 "
+	}
+
+	# Validate if a service is running
+	# Usage: G_CHECK_SERVICE "nginx" && echo "Running"
+	G_CHECK_SERVICE() {
+		systemctl is-active --quiet "$1" 2>/dev/null
+	}
+
+	# Validate if a package is installed
+	# Usage: G_CHECK_PACKAGE "nginx" && echo "Installed"
+	G_CHECK_PACKAGE() {
+		dpkg-query -s "$1" &> /dev/null
+	}
+
+	# Validate IP address format
+	# Usage: G_VALIDATE_IP "192.168.1.1" && echo "Valid IP"
+	G_VALIDATE_IP() {
+		local ip=$1
+		[[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+		local IFS='.'
+		local -a octets=($ip)
+		for octet in "${octets[@]}"; do
+			(( octet > 255 )) && return 1
+		done
+		return 0
+	}
+
+	# Validate URL format
+	# Usage: G_VALIDATE_URL "https://example.com" && echo "Valid URL"
+	G_VALIDATE_URL() {
+		[[ $1 =~ ^https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/.*)?$ ]]
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Backup & Restore Functions
+	#-----------------------------------------------------------------------------------
+
+	# Create timestamped backup of a file
+	# Usage: G_BACKUP_FILE "/etc/config.conf"
+	# Creates: /etc/config.conf.backup.YYYYMMDD_HHMMSS
+	G_BACKUP_FILE() {
+		local file=$1
+		[[ -f "$file" ]] || return 1
+		local backup="${file}.backup.$(date +%Y%m%d_%H%M%S)"
+		cp -a "$file" "$backup" && echo "$backup"
+	}
+
+	# Restore file from most recent backup
+	# Usage: G_RESTORE_FILE "/etc/config.conf"
+	G_RESTORE_FILE() {
+		local file=$1
+		local backup=$(ls -t "${file}.backup."* 2>/dev/null | head -n1)
+		[[ -f "$backup" ]] || return 1
+		cp -a "$backup" "$file"
+	}
+
+	# Create backup directory structure
+	# Usage: G_BACKUP_DIR "/etc/nginx" "/backup/location"
+	G_BACKUP_DIR() {
+		local source=$1
+		local dest=${2:-/var/backups/dietpi}
+		[[ -d "$source" ]] || return 1
+		local backup_name="$(basename "$source").backup.$(date +%Y%m%d_%H%M%S)"
+		mkdir -p "$dest"
+		cp -a "$source" "$dest/$backup_name" && echo "$dest/$backup_name"
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Safe File Operations
+	#-----------------------------------------------------------------------------------
+
+	# Safely append to file (creates backup first)
+	# Usage: G_SAFE_APPEND "/etc/config" "new line content"
+	G_SAFE_APPEND() {
+		local file=$1
+		local content=$2
+		G_BACKUP_FILE "$file" > /dev/null || return 1
+		echo "$content" >> "$file"
+	}
+
+	# Safely replace line in file (creates backup first)
+	# Usage: G_SAFE_REPLACE "/etc/config" "old_pattern" "new_line"
+	G_SAFE_REPLACE() {
+		local file=$1
+		local pattern=$2
+		local replacement=$3
+		G_BACKUP_FILE "$file" > /dev/null || return 1
+		sed -i "s|$pattern|$replacement|g" "$file"
+	}
+
+	# Safely delete line from file (creates backup first)
+	# Usage: G_SAFE_DELETE_LINE "/etc/config" "pattern_to_delete"
+	G_SAFE_DELETE_LINE() {
+		local file=$1
+		local pattern=$2
+		G_BACKUP_FILE "$file" > /dev/null || return 1
+		sed -i "/$pattern/d" "$file"
+	}
+
+	#-----------------------------------------------------------------------------------
+	# System Information Functions
+	#-----------------------------------------------------------------------------------
+
+	# Get total RAM in MB
+	# Usage: ram=$(G_GET_RAM_MB)
+	G_GET_RAM_MB() {
+		free -m | awk '/^Mem:/{print $2}'
+	}
+
+	# Get available disk space in GB
+	# Usage: space=$(G_GET_DISK_SPACE "/")
+	G_GET_DISK_SPACE() {
+		local path=${1:-/}
+		df -BG "$path" | awk 'NR==2{print $4}' | sed 's/G//'
+	}
+
+	# Get CPU count
+	# Usage: cpus=$(G_GET_CPU_COUNT)
+	G_GET_CPU_COUNT() {
+		nproc
+	}
+
+	# Get CPU temperature (if available)
+	# Usage: temp=$(G_GET_CPU_TEMP)
+	G_GET_CPU_TEMP() {
+		local temp_file
+		for temp_file in /sys/class/thermal/thermal_zone*/temp; do
+			[[ -f "$temp_file" ]] || continue
+			local temp=$(cat "$temp_file")
+			echo "$((temp / 1000))"
+			return 0
+		done
+		return 1
+	}
+
+	# Get system uptime in seconds
+	# Usage: uptime=$(G_GET_UPTIME)
+	G_GET_UPTIME() {
+		awk '{print int($1)}' /proc/uptime
+	}
+
+	# Get load average
+	# Usage: load=$(G_GET_LOAD_AVG)
+	G_GET_LOAD_AVG() {
+		awk '{print $1}' /proc/loadavg
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Network Helper Functions
+	#-----------------------------------------------------------------------------------
+
+	# Get primary network interface
+	# Usage: iface=$(G_GET_PRIMARY_INTERFACE)
+	G_GET_PRIMARY_INTERFACE() {
+		ip route | awk '/^default/{print $5; exit}'
+	}
+
+	# Get IP address of interface
+	# Usage: ip=$(G_GET_IP_ADDRESS "eth0")
+	G_GET_IP_ADDRESS() {
+		local iface=${1:-$(G_GET_PRIMARY_INTERFACE)}
+		ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1
+	}
+
+	# Check internet connectivity
+	# Usage: G_CHECK_INTERNET && echo "Connected"
+	G_CHECK_INTERNET() {
+		ping -c 1 -W 2 8.8.8.8 &> /dev/null || ping -c 1 -W 2 1.1.1.1 &> /dev/null
+	}
+
+	# Get public IP address
+	# Usage: public_ip=$(G_GET_PUBLIC_IP)
+	G_GET_PUBLIC_IP() {
+		curl -sf --max-time 5 https://api.ipify.org 2>/dev/null || \
+		curl -sf --max-time 5 https://icanhazip.com 2>/dev/null || \
+		echo "unavailable"
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Progress & Feedback Functions
+	#-----------------------------------------------------------------------------------
+
+	# Show progress bar
+	# Usage: G_PROGRESS_BAR 50 100 "Installing..."
+	G_PROGRESS_BAR() {
+		local current=$1
+		local total=$2
+		local message=${3:-"Progress"}
+		local percent=$((current * 100 / total))
+		local filled=$((percent / 2))
+		local empty=$((50 - filled))
+		
+		printf "\r%s: [" "$message"
+		printf "%${filled}s" | tr ' ' '='
+		printf "%${empty}s" | tr ' ' '-'
+		printf "] %3d%%" "$percent"
+		
+		[[ $current -eq $total ]] && echo
+	}
+
+	# Spinner animation for long-running tasks
+	# Usage: long_task & G_SPINNER $! "Processing..."
+	G_SPINNER() {
+		local pid=$1
+		local message=${2:-"Working"}
+		local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+		local i=0
+		
+		while kill -0 "$pid" 2>/dev/null; do
+			i=$(( (i+1) % 10 ))
+			printf "\r%s %s " "$message" "${spin:$i:1}"
+			sleep 0.1
+		done
+		printf "\r%s ... Done\n" "$message"
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Retry & Timeout Functions
+	#-----------------------------------------------------------------------------------
+
+	# Retry command with exponential backoff
+	# Usage: G_RETRY 5 "apt-get update"
+	G_RETRY() {
+		local max_attempts=$1
+		shift
+		local attempt=1
+		local delay=1
+		
+		while (( attempt <= max_attempts )); do
+			if "$@"; then
+				return 0
+			fi
+			
+			if (( attempt < max_attempts )); then
+				echo "Attempt $attempt failed. Retrying in ${delay}s..." >&2
+				sleep "$delay"
+				delay=$((delay * 2))
+			fi
+			((attempt++))
+		done
+		
+		echo "Command failed after $max_attempts attempts" >&2
+		return 1
+	}
+
+	# Run command with timeout
+	# Usage: G_TIMEOUT 30 "long_running_command"
+	G_TIMEOUT() {
+		local timeout=$1
+		shift
+		timeout "$timeout" "$@"
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Logging Functions
+	#-----------------------------------------------------------------------------------
+
+	# Log to file with timestamp
+	# Usage: G_LOG "message" "/var/log/dietpi.log"
+	G_LOG() {
+		local message=$1
+		local logfile=${2:-/var/log/dietpi/dietpi.log}
+		local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+		
+		mkdir -p "$(dirname "$logfile")"
+		echo "[$timestamp] $message" >> "$logfile"
+	}
+
+	# Log with severity level
+	# Usage: G_LOG_LEVEL "ERROR" "Something went wrong"
+	G_LOG_LEVEL() {
+		local level=$1
+		local message=$2
+		local logfile=${3:-/var/log/dietpi/dietpi.log}
+		
+		G_LOG "[$level] $message" "$logfile"
+		
+		# Also output to console for errors
+		[[ $level == "ERROR" ]] && echo "ERROR: $message" >&2
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Cleanup Functions
+	#-----------------------------------------------------------------------------------
+
+	# Clean old backups (keep last N)
+	# Usage: G_CLEANUP_BACKUPS "/etc/config.conf" 5
+	G_CLEANUP_BACKUPS() {
+		local file=$1
+		local keep=${2:-5}
+		
+		ls -t "${file}.backup."* 2>/dev/null | tail -n +$((keep + 1)) | xargs -r rm -f
+	}
+
+	# Clean old log files (older than N days)
+	# Usage: G_CLEANUP_LOGS "/var/log/dietpi" 30
+	G_CLEANUP_LOGS() {
+		local logdir=$1
+		local days=${2:-30}
+		
+		find "$logdir" -type f -name "*.log" -mtime +$days -delete 2>/dev/null
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Performance Helpers
+	#-----------------------------------------------------------------------------------
+
+	# Optimize I/O scheduler for device type
+	# Usage: G_OPTIMIZE_IO_SCHEDULER "/dev/sda"
+	G_OPTIMIZE_IO_SCHEDULER() {
+		local device=$1
+		local device_name=$(basename "$device")
+		local sched_path="/sys/block/$device_name/queue/scheduler"
+		
+		[[ -f "$sched_path" ]] || return 1
+		
+		# Detect device type and set appropriate scheduler
+		if [[ $device =~ nvme|ssd ]]; then
+			echo "none" > "$sched_path" 2>/dev/null || echo "noop" > "$sched_path" 2>/dev/null
+		elif [[ $device =~ mmc|sd ]]; then
+			echo "deadline" > "$sched_path" 2>/dev/null
+		else
+			echo "bfq" > "$sched_path" 2>/dev/null || echo "cfq" > "$sched_path" 2>/dev/null
+		fi
+	}
+
+	# Set CPU governor
+	# Usage: G_SET_CPU_GOVERNOR "performance"
+	G_SET_CPU_GOVERNOR() {
+		local governor=$1
+		local cpu
+		
+		for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+			[[ -f "$cpu" ]] && echo "$governor" > "$cpu" 2>/dev/null
+		done
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Safety Checks
+	#-----------------------------------------------------------------------------------
+
+	# Check if system has enough resources for operation
+	# Usage: G_CHECK_RESOURCES 1024 10 || { echo "Insufficient resources"; exit 1; }
+	G_CHECK_RESOURCES() {
+		local min_ram_mb=${1:-512}
+		local min_disk_gb=${2:-5}
+		
+		local ram=$(G_GET_RAM_MB)
+		local disk=$(G_GET_DISK_SPACE "/")
+		
+		(( ram >= min_ram_mb )) || return 1
+		(( disk >= min_disk_gb )) || return 1
+		
+		return 0
+	}
+
+	# Verify system is not under heavy load before operation
+	# Usage: G_CHECK_LOAD 2.0 || { echo "System too busy"; exit 1; }
+	G_CHECK_LOAD() {
+		local max_load=${1:-2.0}
+		local current_load=$(G_GET_LOAD_AVG)
+		
+		awk -v curr="$current_load" -v max="$max_load" 'BEGIN{exit(curr>max)}'
+	}
+
+	#-----------------------------------------------------------------------------------
+	# Export all functions
+	#-----------------------------------------------------------------------------------
+	export -f G_CHECK_COMMAND G_CHECK_FILE G_CHECK_DIR G_CHECK_ROOT
+	export -f G_CHECK_PORT G_CHECK_SERVICE G_CHECK_PACKAGE
+	export -f G_VALIDATE_IP G_VALIDATE_URL
+	export -f G_BACKUP_FILE G_RESTORE_FILE G_BACKUP_DIR
+	export -f G_SAFE_APPEND G_SAFE_REPLACE G_SAFE_DELETE_LINE
+	export -f G_GET_RAM_MB G_GET_DISK_SPACE G_GET_CPU_COUNT
+	export -f G_GET_CPU_TEMP G_GET_UPTIME G_GET_LOAD_AVG
+	export -f G_GET_PRIMARY_INTERFACE G_GET_IP_ADDRESS
+	export -f G_CHECK_INTERNET G_GET_PUBLIC_IP
+	export -f G_PROGRESS_BAR G_SPINNER
+	export -f G_RETRY G_TIMEOUT
+	export -f G_LOG G_LOG_LEVEL
+	export -f G_CLEANUP_BACKUPS G_CLEANUP_LOGS
+	export -f G_OPTIMIZE_IO_SCHEDULER G_SET_CPU_GOVERNOR
+	export -f G_CHECK_RESOURCES G_CHECK_LOAD
+
+}
